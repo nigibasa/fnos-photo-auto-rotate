@@ -1,0 +1,13 @@
+{
+  "port-config": {
+    "protocol-file": "PhotoAutoRotate.sc"
+  },
+  "docker-project": {
+    "projects": [
+      {
+        "name": "fnos-photo-auto-rotate",
+        "path": "docker"
+      }
+    ]
+  }
+}

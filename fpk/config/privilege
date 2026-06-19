@@ -1,0 +1,7 @@
+{
+  "defaults": {
+    "run-as": "package"
+  },
+  "username": "fnos-photo-auto-rotate",
+  "groupname": "fnos-photo-auto-rotate"
+}

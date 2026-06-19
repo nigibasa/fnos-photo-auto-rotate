@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>照片自动回正</title>
+  <style>
+    :root {
+      --ink: #18201d;
+      --paper: #f2efe6;
+      --card: #fffdf7;
+      --line: #c9c2b3;
+      --green: #1f6b4f;
+      --green-bright: #56d397;
+      --orange: #e7682f;
+      --muted: #6f746d;
+      --shadow: 0 18px 50px rgba(41, 38, 30, .12);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        linear-gradient(rgba(24,32,29,.035) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(24,32,29,.035) 1px, transparent 1px),
+        var(--paper);
+      background-size: 28px 28px;
+      font-family: "Noto Serif SC", "Songti SC", Georgia, serif;
+    }
+    body::before {
+      content: "";
+      position: fixed; inset: 0; pointer-events: none;
+      background: radial-gradient(circle at 82% 4%, rgba(86,211,151,.2), transparent 25%),
+                  radial-gradient(circle at 3% 74%, rgba(231,104,47,.1), transparent 22%);
+    }
+    button, input { font: inherit; }
+    .shell { max-width: 1180px; margin: 0 auto; padding: 46px 26px 70px; position: relative; }
+    header { display: grid; grid-template-columns: 1fr auto; align-items: end; gap: 28px; margin-bottom: 30px; }
+    .eyebrow { font: 700 12px/1.2 ui-monospace, Consolas, monospace; letter-spacing: .18em; color: var(--green); text-transform: uppercase; }
+    h1 { margin: 9px 0 7px; font-size: clamp(38px, 6vw, 72px); line-height: .95; letter-spacing: -.055em; font-weight: 800; }
+    .lede { margin: 0; max-width: 670px; color: var(--muted); font-size: 16px; line-height: 1.8; }
+    .seal { width: 116px; height: 116px; border: 2px solid var(--ink); border-radius: 50%; display: grid; place-items: center; transform: rotate(5deg); background: var(--green-bright); box-shadow: 7px 7px 0 var(--ink); }
+    .seal svg { width: 70px; height: 70px; }
+    .grid { display: grid; grid-template-columns: 1.1fr .9fr; gap: 20px; }
+    .card { background: color-mix(in srgb, var(--card) 94%, transparent); border: 1px solid var(--line); box-shadow: var(--shadow); padding: 24px; }
+    .card h2 { font-size: 20px; margin: 0 0 18px; display: flex; justify-content: space-between; align-items: center; }
+    .tag { font: 700 11px/1 ui-monospace, Consolas, monospace; letter-spacing: .08em; padding: 7px 9px; border: 1px solid var(--line); color: var(--muted); }
+    label { display: block; font-size: 13px; font-weight: 700; margin: 17px 0 7px; }
+    input[type="text"], input[type="number"] { width: 100%; border: 1px solid var(--line); background: #fff; color: var(--ink); padding: 12px 13px; outline: none; border-radius: 0; }
+    input:focus { border-color: var(--green); box-shadow: 0 0 0 3px rgba(31,107,79,.12); }
+    .path-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
+    .toggle-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 18px; margin-top: 18px; }
+    .toggle { display: flex; align-items: center; gap: 10px; margin: 0; font-weight: 500; cursor: pointer; }
+    .toggle input { accent-color: var(--green); width: 18px; height: 18px; }
+    .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 24px; }
+    button { border: 1px solid var(--ink); padding: 12px 16px; cursor: pointer; background: #fff; color: var(--ink); transition: transform .15s, box-shadow .15s, background .15s; }
+    button:hover { transform: translate(-2px, -2px); box-shadow: 4px 4px 0 var(--ink); }
+    button:disabled { opacity: .45; cursor: not-allowed; transform: none; box-shadow: none; }
+    .primary { background: var(--green); color: #fff; }
+    .danger { background: var(--orange); color: #fff; }
+    .ghost { padding: 10px 13px; }
+    .status-strip { border-left: 6px solid var(--line); padding: 14px 16px; background: #f7f4eb; margin-bottom: 14px; }
+    .status-strip.running { border-color: var(--green-bright); }
+    .status-strip.failed { border-color: var(--orange); }
+    .status-title { font-size: 18px; font-weight: 800; }
+    .status-meta { color: var(--muted); font: 12px/1.6 ui-monospace, Consolas, monospace; margin-top: 5px; }
+    pre { margin: 0; height: 352px; overflow: auto; padding: 16px; background: #17211d; color: #cde7d9; font: 12px/1.65 ui-monospace, Consolas, monospace; white-space: pre-wrap; }
+    .logs { grid-column: 1 / -1; }
+    .log-list { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+    .log-item { border-top: 2px solid var(--ink); padding: 12px 4px; text-decoration: none; color: inherit; }
+    .log-item strong { display: block; font: 12px/1.5 ui-monospace, Consolas, monospace; overflow-wrap: anywhere; }
+    .log-item span { color: var(--muted); font-size: 12px; }
+    dialog { width: min(680px, calc(100vw - 28px)); border: 1px solid var(--ink); padding: 0; box-shadow: 10px 10px 0 var(--ink); background: var(--card); }
+    dialog::backdrop { background: rgba(15,22,19,.65); backdrop-filter: blur(3px); }
+    .dialog-head { padding: 18px 20px; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; }
+    .browser { padding: 12px 20px 20px; max-height: 55vh; overflow: auto; }
+    .dir { width: 100%; text-align: left; border-width: 0 0 1px; border-color: var(--line); background: transparent; box-shadow: none !important; transform: none !important; }
+    .notice { min-height: 24px; margin-top: 10px; color: var(--orange); font-size: 13px; }
+    @media (max-width: 820px) {
+      header { grid-template-columns: 1fr; }
+      .seal { display: none; }
+      .grid { grid-template-columns: 1fr; }
+      .logs { grid-column: auto; }
+      .log-list { grid-template-columns: 1fr; }
+      .toggle-row { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header>
+      <div>
+        <div class="eyebrow">fnOS · Photo orientation workshop</div>
+        <h1>照片自动回正</h1>
+        <p class="lede">先依据 EXIF 确定方向，再比较四个角度的人脸检测结果。判断含糊时保持原图不动——宁可留给你复核，也不自作聪明。</p>
+      </div>
+      <div class="seal" aria-hidden="true">
+        <svg viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="4">
+          <rect x="10" y="15" width="38" height="32"/>
+          <circle cx="23" cy="26" r="5"/>
+          <path d="M13 43l11-10 8 7 7-6 8 7M48 11c7 3 10 10 8 17M55 29l2-5 5 2"/>
+        </svg>
+      </div>
+    </header>
+
+    <section class="grid">
+      <article class="card">
+        <h2>扫描设置 <span class="tag">01 / SETUP</span></h2>
+        <label for="source">照片目录</label>
+        <div class="path-row">
+          <input id="source" type="text" value="/storage/vol1">
+          <button class="ghost" id="browseBtn">浏览</button>
+        </div>
+        <p class="status-meta">请选择实际照片文件夹，不建议直接扫描整个 /storage/vol1。</p>
+
+        <div class="toggle-row">
+          <label class="toggle"><input id="recursive" type="checkbox" checked>递归扫描子文件夹</label>
+          <label class="toggle"><input id="backup" type="checkbox" checked>正式执行前备份原图</label>
+          <label class="toggle"><input id="allow180" type="checkbox">允许自动旋转 180°</label>
+        </div>
+
+        <label for="confidence">最低可信度（推荐 1.35）</label>
+        <input id="confidence" type="number" min="1.01" max="10" step="0.05" value="1.35">
+
+        <label for="age">跳过最近修改的照片（分钟）</label>
+        <input id="age" type="number" min="0" max="10080" value="10">
+
+        <div class="actions">
+          <button class="primary" id="scanBtn">安全扫描，不修改</button>
+          <button class="danger" id="applyBtn">备份并正式回正</button>
+        </div>
+        <div class="notice" id="notice"></div>
+      </article>
+
+      <article class="card">
+        <h2>任务现场 <span class="tag">02 / LIVE</span></h2>
+        <div id="status" class="status-strip">
+          <div class="status-title">等待任务</div>
+          <div class="status-meta">建议先运行安全扫描</div>
+        </div>
+        <pre id="terminal">这里会显示扫描进度和最终统计。</pre>
+        <button id="stopBtn" style="margin-top:10px" disabled>停止当前任务</button>
+      </article>
+
+      <article class="card logs">
+        <h2>结果清单 <span class="tag">03 / CSV</span></h2>
+        <div id="logs" class="log-list"><span class="status-meta">暂无结果文件</span></div>
+      </article>
+    </section>
+  </main>
+
+  <dialog id="browserDialog">
+    <div class="dialog-head"><strong>选择照片文件夹</strong><button id="closeBrowser">关闭</button></div>
+    <div class="browser">
+      <div id="browserPath" class="status-meta"></div>
+      <button id="chooseHere" class="primary" style="margin:12px 0">选择当前文件夹</button>
+      <div id="directories"></div>
+    </div>
+  </dialog>
+
+  <script>
+    const $ = id => document.getElementById(id);
+    const fields = {
+      source: $("source"), recursive: $("recursive"), backup: $("backup"),
+      allow180: $("allow180"), confidence: $("confidence"), age: $("age")
+    };
+    let browserPath = "/storage";
+
+    function config() {
+      return {
+        source: fields.source.value.trim(),
+        recursive: fields.recursive.checked,
+        backup: fields.backup.checked,
+        allow_180: fields.allow180.checked,
+        min_confidence: Number(fields.confidence.value),
+        min_age_minutes: Number(fields.age.value)
+      };
+    }
+    async function api(path, options={}) {
+      const response = await fetch(path, {headers: {"Content-Type": "application/json"}, ...options});
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "请求失败");
+      return data;
+    }
+    function showError(error) { $("notice").textContent = error.message || String(error); }
+    async function loadConfig() {
+      const data = await api("/api/config");
+      fields.source.value = data.source;
+      fields.recursive.checked = data.recursive;
+      fields.backup.checked = data.backup;
+      fields.allow180.checked = data.allow_180;
+      fields.confidence.value = data.min_confidence;
+      fields.age.value = data.min_age_minutes;
+    }
+    async function run(mode) {
+      $("notice").textContent = "";
+      let confirm = "";
+      if (mode === "apply") {
+        confirm = prompt("正式执行会修改照片像素。原图将按设置备份。请输入 ROTATE 继续：") || "";
+        if (confirm !== "ROTATE") return;
+      }
+      try {
+        await api("/api/run", {method: "POST", body: JSON.stringify({mode, confirm, config: config()})});
+        await refresh();
+      } catch (error) { showError(error); }
+    }
+    async function refresh() {
+      try {
+        const data = await api("/api/status");
+        const status = $("status");
+        status.className = "status-strip" + (data.running ? " running" : data.exit_code ? " failed" : "");
+        status.querySelector(".status-title").textContent = data.running ? `${data.mode === "apply" ? "正式回正" : "安全扫描"}进行中` : data.finished_at ? (data.exit_code === 0 ? "任务已完成" : "任务出现错误") : "等待任务";
+        status.querySelector(".status-meta").textContent = data.started_at ? `开始：${data.started_at}${data.finished_at ? " · 结束：" + data.finished_at : ""}` : "建议先运行安全扫描";
+        $("terminal").textContent = data.output.length ? data.output.join("\n") : "这里会显示扫描进度和最终统计。";
+        $("terminal").scrollTop = $("terminal").scrollHeight;
+        $("stopBtn").disabled = !data.running;
+        $("scanBtn").disabled = data.running;
+        $("applyBtn").disabled = data.running;
+        $("logs").innerHTML = data.logs.length ? data.logs.map(log =>
+          `<a class="log-item" href="${log.url}"><strong>${log.name}</strong><span>${log.modified} · ${(log.size/1024).toFixed(1)} KB</span></a>`
+        ).join("") : '<span class="status-meta">暂无结果文件</span>';
+      } catch (error) { showError(error); }
+    }
+    async function browse(path) {
+      try {
+        const data = await api("/api/browse?path=" + encodeURIComponent(path));
+        browserPath = data.path;
+        $("browserPath").textContent = data.path;
+        const rows = [];
+        if (data.parent) rows.push(`<button class="dir" data-path="${data.parent}">↰ 上一级</button>`);
+        rows.push(...data.directories.map(dir => `<button class="dir" data-path="${dir.path}">▸ ${dir.name}</button>`));
+        $("directories").innerHTML = rows.join("") || '<p class="status-meta">没有子文件夹</p>';
+        $("browserDialog").showModal();
+      } catch (error) { showError(error); }
+    }
+    $("directories").addEventListener("click", event => {
+      const button = event.target.closest("[data-path]");
+      if (button) browse(button.dataset.path);
+    });
+    $("browseBtn").onclick = () => browse(fields.source.value || "/storage");
+    $("chooseHere").onclick = () => { fields.source.value = browserPath; $("browserDialog").close(); };
+    $("closeBrowser").onclick = () => $("browserDialog").close();
+    $("scanBtn").onclick = () => run("scan");
+    $("applyBtn").onclick = () => run("apply");
+    $("stopBtn").onclick = async () => { await api("/api/stop", {method:"POST", body:"{}"}); refresh(); };
+    loadConfig().catch(showError);
+    refresh();
+    setInterval(refresh, 1800);
+  </script>
+</body>
+</html>

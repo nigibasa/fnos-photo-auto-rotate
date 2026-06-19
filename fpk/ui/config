@@ -1,0 +1,14 @@
+{
+  ".url": {
+    "fnos-photo-auto-rotate.Application": {
+      "title": "照片自动回正",
+      "desc": "批量检查并修正照片方向",
+      "icon": "images/{0}.png",
+      "type": "url",
+      "protocol": "http",
+      "port": "8321",
+      "url": "/",
+      "allUsers": false
+    }
+  }
+}

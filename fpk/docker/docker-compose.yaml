@@ -1,0 +1,13 @@
+services:
+  photo-auto-rotate:
+    image: __IMAGE__
+    container_name: fnos-photo-auto-rotate
+    restart: unless-stopped
+    environment:
+      WEB_PORT: "8321"
+      DATA_DIR: /data
+    ports:
+      - "8321:8321"
+    volumes:
+      - /vol1:/storage/vol1
+      - /vol1/docker/fnos-photo-auto-rotate:/data

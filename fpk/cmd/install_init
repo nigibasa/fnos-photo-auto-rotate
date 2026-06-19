@@ -1,0 +1,7 @@
+#!/bin/bash
+set -eu
+if ! command -v docker >/dev/null 2>&1; then
+  echo "未检测到 Docker，照片自动回正需要 fnOS Docker 支持。" > "${TRIM_TEMP_LOGFILE:-/dev/stderr}"
+  exit 1
+fi
+exit 0

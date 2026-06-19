@@ -1,0 +1,5 @@
+#!/bin/bash
+set -eu
+mkdir -p /vol1/docker/fnos-photo-auto-rotate/logs
+mkdir -p /vol1/docker/fnos-photo-auto-rotate/backups
+exit 0
