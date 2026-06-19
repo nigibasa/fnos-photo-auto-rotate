@@ -117,7 +117,9 @@
           <label class="toggle"><input id="recursive" type="checkbox" checked>递归扫描子文件夹</label>
           <label class="toggle"><input id="backup" type="checkbox" checked>正式执行前备份原图</label>
           <label class="toggle"><input id="allow180" type="checkbox">允许自动旋转 180°</label>
+          <label class="toggle"><input id="applyFace" type="checkbox">实验：正式执行人脸方向建议</label>
         </div>
+        <p class="status-meta">建议保持实验选项关闭。EXIF 固化不会改变肉眼看到的方向；人脸结果只写入建议清单。</p>
 
         <label for="confidence">最低可信度（推荐 1.35）</label>
         <input id="confidence" type="number" min="1.01" max="10" step="0.05" value="1.35">
@@ -129,6 +131,12 @@
           <button class="primary" id="scanBtn">安全扫描，不修改</button>
           <button class="danger" id="applyBtn">备份并正式回正</button>
         </div>
+        <label for="csvFile">已有扫描清单</label>
+        <div class="path-row">
+          <input id="csvFile" type="file" accept=".csv,text/csv">
+          <button id="runCsvBtn">导入 CSV 并执行</button>
+        </div>
+        <p class="status-meta">兼容旧版清单；默认仅执行 EXIF 项，人脸建议不会修改照片。</p>
         <div class="notice" id="notice"></div>
       </article>
 
@@ -162,7 +170,8 @@
     const $ = id => document.getElementById(id);
     const fields = {
       source: $("source"), recursive: $("recursive"), backup: $("backup"),
-      allow180: $("allow180"), confidence: $("confidence"), age: $("age")
+      allow180: $("allow180"), applyFace: $("applyFace"),
+      confidence: $("confidence"), age: $("age")
     };
     let browserPath = "/storage";
 
@@ -171,6 +180,7 @@
         source: fields.source.value.trim(),
         recursive: fields.recursive.checked,
         backup: fields.backup.checked,
+        apply_face_suggestions: fields.applyFace.checked,
         allow_180: fields.allow180.checked,
         min_confidence: Number(fields.confidence.value),
         min_age_minutes: Number(fields.age.value)
@@ -188,6 +198,7 @@
       fields.source.value = data.source;
       fields.recursive.checked = data.recursive;
       fields.backup.checked = data.backup;
+      fields.applyFace.checked = data.apply_face_suggestions;
       fields.allow180.checked = data.allow_180;
       fields.confidence.value = data.min_confidence;
       fields.age.value = data.min_age_minutes;
@@ -196,11 +207,27 @@
       $("notice").textContent = "";
       let confirm = "";
       if (mode === "apply") {
-        confirm = prompt("正式执行会修改照片像素。原图将按设置备份。请输入 ROTATE 继续：") || "";
+        const faceWarning = fields.applyFace.checked ? "你已开启实验性人脸旋转，可能存在误判。" : "本次只自动固化可靠的 EXIF 方向，人脸建议不会修改照片。";
+        confirm = prompt(`正式执行会修改照片像素。${faceWarning} 原图将按设置备份。请输入 ROTATE 继续：`) || "";
         if (confirm !== "ROTATE") return;
       }
       try {
         await api("/api/run", {method: "POST", body: JSON.stringify({mode, confirm, config: config()})});
+        await refresh();
+      } catch (error) { showError(error); }
+    }
+    async function runCsv() {
+      $("notice").textContent = "";
+      const file = $("csvFile").files[0];
+      if (!file) return showError(new Error("请先选择扫描结果 CSV"));
+      const confirm = prompt("将按 CSV 执行，并再次核对当前 EXIF，已处理照片会跳过。请输入 ROTATE 继续：") || "";
+      if (confirm !== "ROTATE") return;
+      try {
+        const csv = await file.text();
+        await api("/api/run-csv", {
+          method: "POST",
+          body: JSON.stringify({name: file.name, csv, confirm, config: config()})
+        });
         await refresh();
       } catch (error) { showError(error); }
     }
@@ -216,6 +243,7 @@
         $("stopBtn").disabled = !data.running;
         $("scanBtn").disabled = data.running;
         $("applyBtn").disabled = data.running;
+        $("runCsvBtn").disabled = data.running;
         $("logs").innerHTML = data.logs.length ? data.logs.map(log =>
           `<a class="log-item" href="${log.url}"><strong>${log.name}</strong><span>${log.modified} · ${(log.size/1024).toFixed(1)} KB</span></a>`
         ).join("") : '<span class="status-meta">暂无结果文件</span>';
@@ -242,6 +270,7 @@
     $("closeBrowser").onclick = () => $("browserDialog").close();
     $("scanBtn").onclick = () => run("scan");
     $("applyBtn").onclick = () => run("apply");
+    $("runCsvBtn").onclick = runCsv;
     $("stopBtn").onclick = async () => { await api("/api/stop", {method:"POST", body:"{}"}); refresh(); };
     loadConfig().catch(showError);
     refresh();

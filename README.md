@@ -7,13 +7,14 @@
 ## 功能
 
 - 优先读取 EXIF Orientation，做确定性的方向修正。
-- EXIF 不可用时，比较照片在 0°、90°、180°、270°方向的人脸检测结果。
+- EXIF 不可用时，比较照片在 0°、90°、180°、270°方向的人脸检测结果；默认只生成建议，不修改照片。
 - 默认只处理高可信度结果；判断不明确的照片进入 CSV 人工复核清单。
-- “安全扫描”模式完全不修改照片。
+- “安全扫描”模式完全不修改照片，并把 EXIF 固化与实验性人脸建议分开标记。
 - 正式执行前可按原目录结构备份原图。
 - JPEG 使用 `jpegtran` 无损旋转，尽量避免二次压缩。
 - 支持 JPG、JPEG、PNG、WEBP。
 - 自带目录浏览、实时进度、任务停止和 CSV 下载。
+- 可导入已有扫描 CSV 直接执行，无需再次进行完整人脸扫描；执行前会复核当前 EXIF，防止重复旋转。
 
 ## 安装
 
@@ -24,7 +25,8 @@
 3. 上传 `.fpk` 并完成安装。
 4. 从飞牛桌面打开「照片自动回正」。
 5. 先选择一个小文件夹运行「安全扫描」。
-6. 下载 CSV 抽查 `would-rotate` 项，确认后再点击「备份并正式回正」。
+6. 下载 CSV：`would-normalize-exif` 表示固化 EXIF，肉眼方向不变；`face-suggest` 是实验性建议。
+7. 确认后点击「备份并正式回正」。默认只执行 EXIF 固化，不执行人脸建议。
 
 默认挂载：
 
@@ -60,7 +62,7 @@ docker build -t fnos-photo-auto-rotate:dev .
 
 ```sh
 python build_fpk.py \
-  --image ghcr.io/你的用户名/fnos-photo-auto-rotate:0.1.2 \
+  --image ghcr.io/你的用户名/fnos-photo-auto-rotate:0.1.4 \
   --platform x86
 ```
 
@@ -74,7 +76,7 @@ python -m unittest discover -s tests -v
 ## GitHub 自动发布
 
 - 推送到 `main`：自动构建 amd64/arm64 GHCR 镜像和 FPK artifact。
-- 推送 `v0.1.0` 标签：额外创建 GitHub Release，并附带 x86、ARM 两个可安装的 FPK。
+- 推送版本标签（例如 `v0.1.4`）：额外创建 GitHub Release，并附带 x86、ARM 两个可安装的 FPK。
 - GHCR 镜像需要设为 Public，飞牛才能匿名拉取。
 
 ## 处理后飞牛仍显示旧方向

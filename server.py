@@ -18,6 +18,7 @@ WEB_ROOT = APP_DIR / "web"
 ROTATOR_SCRIPT = APP_DIR / "photo_auto_rotate.py"
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/data"))
 CONFIG_FILE = DATA_DIR / "config.json"
+IMPORT_DIR = DATA_DIR / "imports"
 ALLOWED_ROOT = Path(os.environ.get("ALLOWED_ROOT", "/storage")).resolve()
 PORT = int(os.environ.get("WEB_PORT", "8321"))
 
@@ -28,6 +29,7 @@ DEFAULT_CONFIG = {
     "allow_180": False,
     "min_age_minutes": 10,
     "backup": True,
+    "apply_face_suggestions": False,
 }
 
 
@@ -65,6 +67,7 @@ def save_config(data: dict) -> dict:
         "allow_180": bool(data.get("allow_180", False)),
         "min_age_minutes": max(0, min(10080, int(data.get("min_age_minutes", 10)))),
         "backup": bool(data.get("backup", True)),
+        "apply_face_suggestions": bool(data.get("apply_face_suggestions", False)),
     }
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     temp = CONFIG_FILE.with_suffix(".tmp")
@@ -95,7 +98,7 @@ class Job:
                 "output": list(self.lines),
             }
 
-    def start(self, mode: str, config: dict) -> None:
+    def start(self, mode: str, config: dict, input_csv: Path | None = None) -> None:
         with self.lock:
             if self.process is not None and self.process.poll() is None:
                 raise RuntimeError("已有任务正在运行")
@@ -118,9 +121,14 @@ class Job:
                 str(config["min_age_minutes"]),
                 "--backup",
                 "yes" if config["backup"] else "no",
+                "--apply-face-suggestions",
+                "yes" if config["apply_face_suggestions"] else "no",
             ]
+            if input_csv is not None:
+                command.extend(["--input-csv", str(input_csv)])
             self.lines.clear()
-            self.lines.append(f"启动 {mode} 任务：{config['source']}")
+            task_label = "CSV 导入执行" if input_csv else mode
+            self.lines.append(f"启动 {task_label} 任务：{config['source']}")
             self.mode = mode
             self.started_at = datetime.now().astimezone().isoformat(timespec="seconds")
             self.finished_at = None
@@ -194,7 +202,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def read_json(self) -> dict:
         length = int(self.headers.get("Content-Length", "0"))
-        if length > 65536:
+        if length > 25 * 1024 * 1024:
             raise ValueError("请求过大")
         raw = self.rfile.read(length)
         return json.loads(raw.decode("utf-8")) if raw else {}
@@ -267,6 +275,25 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError("正式执行需要输入 ROTATE 确认")
                 config = save_config(payload.get("config", load_config()))
                 JOB.start(mode, config)
+                self.json_response(JOB.status(), HTTPStatus.ACCEPTED)
+                return
+            if self.path == "/api/run-csv":
+                if payload.get("confirm") != "ROTATE":
+                    raise ValueError("CSV 执行需要输入 ROTATE 确认")
+                name = Path(str(payload.get("name", "scan.csv"))).name
+                if not name.lower().endswith(".csv"):
+                    raise ValueError("请选择 CSV 文件")
+                csv_text = payload.get("csv")
+                if not isinstance(csv_text, str) or not csv_text.strip():
+                    raise ValueError("CSV 内容为空")
+                if len(csv_text.encode("utf-8")) > 20 * 1024 * 1024:
+                    raise ValueError("CSV 文件超过 20MB")
+                config = save_config(payload.get("config", load_config()))
+                IMPORT_DIR.mkdir(parents=True, exist_ok=True)
+                timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+                csv_path = IMPORT_DIR / f"{timestamp}-{name}"
+                csv_path.write_text(csv_text, encoding="utf-8")
+                JOB.start("apply", config, input_csv=csv_path)
                 self.json_response(JOB.status(), HTTPStatus.ACCEPTED)
                 return
             if self.path == "/api/stop":

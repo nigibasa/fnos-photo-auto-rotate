@@ -118,9 +118,9 @@ def decide(path: Path, cascade, min_confidence: float, allow_180: bool) -> Decis
     orientation = read_exif_orientation(path)
     if orientation in EXIF_TRANSFORMS:
         return Decision(
-            action="rotate",
+            action="normalize-exif",
             transform=EXIF_TRANSFORMS[orientation],
-            reason=f"EXIF Orientation={orientation}",
+            reason=f"EXIF Orientation={orientation}；固化方向后视觉显示不变",
             confidence=99.0,
         )
 
@@ -161,9 +161,9 @@ def decide(path: Path, cascade, min_confidence: float, allow_180: bool) -> Decis
             scores=scores_text,
         )
     return Decision(
-        action="rotate",
+        action="face-suggest",
         transform=f"rotate-{best_angle}",
-        reason="旋转后的人脸识别结果明显更好",
+        reason="人脸方向建议（实验性，不会默认修改照片）",
         confidence=confidence,
         scores=scores_text,
     )
@@ -261,6 +261,38 @@ def iter_images(root: Path, recursive: bool):
             yield path
 
 
+def safe_csv_path(source: Path, relative: str) -> Path:
+    cleaned = relative.strip().replace("\\", "/")
+    if not cleaned or cleaned.startswith("/"):
+        raise ValueError("CSV 中的相对路径无效")
+    path = (source / cleaned).resolve()
+    try:
+        path.relative_to(source)
+    except ValueError as exc:
+        raise ValueError("CSV 路径超出照片目录") from exc
+    return path
+
+
+def iter_csv_decisions(csv_path: Path, source: Path):
+    with csv_path.open("r", newline="", encoding="utf-8-sig") as csv_file:
+        reader = csv.DictReader(csv_file)
+        required = {"状态", "操作", "原因", "相对路径"}
+        if not reader.fieldnames or not required.issubset(reader.fieldnames):
+            raise ValueError("CSV 格式不兼容，缺少状态、操作、原因或相对路径列")
+        for row in reader:
+            status = (row.get("状态") or "").strip()
+            reason = (row.get("原因") or "").strip()
+            transform = (row.get("操作") or "").strip()
+            relative = (row.get("相对路径") or "").strip()
+
+            # 兼容 v0.1.2 及更早版本的 would-rotate + EXIF Orientation=N。
+            is_exif = reason.startswith("EXIF Orientation=")
+            is_face = status in {"face-suggest", "would-rotate"} and not is_exif
+            if not is_exif and not is_face:
+                continue
+            yield safe_csv_path(source, relative), relative, transform, reason, is_exif
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--source", type=Path, required=True)
@@ -271,6 +303,8 @@ def main() -> int:
     parser.add_argument("--allow-180", default="no")
     parser.add_argument("--min-age-minutes", type=int, default=10)
     parser.add_argument("--backup", default="yes")
+    parser.add_argument("--apply-face-suggestions", default="no")
+    parser.add_argument("--input-csv", type=Path)
     args = parser.parse_args()
 
     source = args.source.resolve()
@@ -302,7 +336,16 @@ def main() -> int:
         print("错误：无法加载人脸检测模型。", file=sys.stderr)
         return 2
 
-    counts = {"total": 0, "rotate": 0, "ok": 0, "review": 0, "skip": 0, "error": 0}
+    counts = {
+        "total": 0,
+        "normalize-exif": 0,
+        "face-suggest": 0,
+        "face-rotated": 0,
+        "ok": 0,
+        "review": 0,
+        "skip": 0,
+        "error": 0,
+    }
     cutoff = time.time() - max(0, args.min_age_minutes) * 60
 
     with log_path.open("w", newline="", encoding="utf-8-sig") as log_file:
@@ -311,28 +354,74 @@ def main() -> int:
             ["状态", "操作", "可信度", "原因", "相对路径", "各方向分数", "备份路径"]
         )
 
-        for path in iter_images(source, yes(args.recursive)):
+        if args.input_csv:
+            items = iter_csv_decisions(args.input_csv.resolve(), source)
+        else:
+            items = ((path, str(path.relative_to(source)), "", "", None) for path in iter_images(source, yes(args.recursive)))
+
+        for path, relative, csv_transform, csv_reason, csv_is_exif in items:
             counts["total"] += 1
-            relative = str(path.relative_to(source))
+            if not path.is_file():
+                counts["skip"] += 1
+                writer.writerow(["skip", "", "", "CSV 中的照片不存在", relative, "", ""])
+                continue
             if path.stat().st_mtime > cutoff:
                 counts["skip"] += 1
                 writer.writerow(["skip", "", "", "文件修改时间过近", relative, "", ""])
                 continue
 
             try:
-                decision = decide(path, cascade, args.min_confidence, yes(args.allow_180))
+                if args.input_csv:
+                    if csv_is_exif:
+                        current_orientation = read_exif_orientation(path)
+                        current_transform = EXIF_TRANSFORMS.get(current_orientation)
+                        if current_transform is None:
+                            decision = Decision(
+                                action="skip",
+                                reason="当前 EXIF 已是正常方向，跳过以防重复旋转",
+                            )
+                        elif current_transform != csv_transform:
+                            decision = Decision(
+                                action="review",
+                                reason=f"当前 EXIF 方向与 CSV 不一致：Orientation={current_orientation}",
+                            )
+                        else:
+                            decision = Decision(
+                                action="normalize-exif",
+                                transform=current_transform,
+                                reason=f"从 CSV 导入；EXIF Orientation={current_orientation}；固化后视觉显示不变",
+                                confidence=99.0,
+                            )
+                    else:
+                        decision = Decision(
+                            action="face-suggest",
+                            transform=csv_transform,
+                            reason="从旧版 CSV 导入的人脸方向建议（实验性）",
+                        )
+                else:
+                    decision = decide(path, cascade, args.min_confidence, yes(args.allow_180))
                 backup_path = ""
                 status = decision.action
 
-                if decision.action == "rotate":
-                    counts["rotate"] += 1
+                if decision.action == "normalize-exif":
+                    counts["normalize-exif"] += 1
                     if args.mode == "apply":
                         if yes(args.backup):
                             backup_path = str(backup_file(source, path, backup_root))
                         apply_transform(path, decision.transform)
-                        status = "rotated"
+                        status = "normalized-exif"
                     else:
-                        status = "would-rotate"
+                        status = "would-normalize-exif"
+                elif decision.action == "face-suggest":
+                    counts["face-suggest"] += 1
+                    if args.mode == "apply" and yes(args.apply_face_suggestions):
+                        if yes(args.backup):
+                            backup_path = str(backup_file(source, path, backup_root))
+                        apply_transform(path, decision.transform)
+                        counts["face-rotated"] += 1
+                        status = "rotated-face"
+                    else:
+                        status = "face-suggest"
                 elif decision.action in counts:
                     counts[decision.action] += 1
 
@@ -356,11 +445,15 @@ def main() -> int:
     print("")
     print(f"模式：{args.mode}")
     print(f"扫描：{counts['total']} 张")
-    print(f"判断需旋转：{counts['rotate']} 张")
+    print(f"EXIF 方向待固化：{counts['normalize-exif']} 张（视觉方向不变）")
+    print(f"人脸方向建议：{counts['face-suggest']} 张（默认不修改）")
+    print(f"已按人脸建议旋转：{counts['face-rotated']} 张")
     print(f"方向正常：{counts['ok']} 张")
     print(f"需人工复核：{counts['review']} 张")
     print(f"跳过：{counts['skip']} 张；错误：{counts['error']} 张")
     print(f"详细清单：{log_path}")
+    if args.input_csv:
+        print(f"导入清单：{args.input_csv}")
     if args.mode == "scan":
         print("当前仅演练，没有修改任何照片。确认清单后，把 MODE 改成 apply 再运行。")
     elif yes(args.backup):

@@ -24,7 +24,7 @@ class PackageTests(unittest.TestCase):
                     sys.executable,
                     str(ROOT / "build_fpk.py"),
                     "--image",
-                    "ghcr.io/example/fnos-photo-auto-rotate:0.1.2",
+                    "ghcr.io/example/fnos-photo-auto-rotate:0.1.4",
                     "--platform",
                     "x86",
                     "--output",
@@ -42,6 +42,16 @@ class PackageTests(unittest.TestCase):
         self.assertIn("packages: write", workflow)
         self.assertIn("docker/build-push-action", workflow)
         self.assertIn("build_fpk.py", workflow)
+
+    def test_csv_import_contract_is_present(self) -> None:
+        rotator = (ROOT / "photo_auto_rotate.py").read_text(encoding="utf-8")
+        server = (ROOT / "server.py").read_text(encoding="utf-8")
+        web = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
+        self.assertIn("--input-csv", rotator)
+        self.assertIn("would-normalize-exif", rotator)
+        self.assertIn("当前 EXIF 已是正常方向", rotator)
+        self.assertIn("/api/run-csv", server)
+        self.assertIn("导入 CSV 并执行", web)
 
 
 if __name__ == "__main__":
