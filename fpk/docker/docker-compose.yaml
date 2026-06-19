@@ -10,4 +10,5 @@ services:
       - "8321:8321"
     volumes:
       - /vol1:/storage/vol1
+      - /vol2:/storage/vol2
       - /vol1/docker/fnos-photo-auto-rotate:/data

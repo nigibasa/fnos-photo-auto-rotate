@@ -52,7 +52,11 @@ def main() -> int:
             compose = app.extractfile("docker/docker-compose.yaml").read().decode("utf-8")  # type: ignore[union-attr]
             if "__IMAGE__" in compose or "build:" in compose:
                 raise SystemExit("compose 尚未替换为预构建镜像")
-            if "/vol1:/storage/vol1" not in compose or "8321:8321" not in compose:
+            if (
+                "/vol1:/storage/vol1" not in compose
+                or "/vol2:/storage/vol2" not in compose
+                or "8321:8321" not in compose
+            ):
                 raise SystemExit("compose 挂载或端口无效")
 
     print(f"验证通过：{args.package}")

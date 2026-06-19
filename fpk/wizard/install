@@ -4,7 +4,7 @@
     "items": [
       {
         "type": "tips",
-        "helpText": "应用会把 /vol1 挂载到容器内的 /storage/vol1。安装完成后，请先在网页控制台选择一个小目录执行“安全扫描”，确认 CSV 清单后再正式回正。"
+        "helpText": "应用会把 /vol1、/vol2 分别挂载到容器内的 /storage/vol1、/storage/vol2。安装完成后，请先选择一个小目录执行“安全扫描”，确认 CSV 清单后再正式回正。"
       }
     ]
   }

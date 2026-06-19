@@ -32,7 +32,12 @@ DEFAULT_CONFIG = {
 
 
 def safe_source(value: str) -> Path:
-    path = Path(value).resolve()
+    normalized = value.strip()
+    # 用户通常知道飞牛宿主机路径（/vol1、/vol2），网页中允许直接粘贴，
+    # 后端自动换算为容器内的 /storage/vol1、/storage/vol2。
+    if normalized in {"/vol1", "/vol2"} or normalized.startswith(("/vol1/", "/vol2/")):
+        normalized = str(ALLOWED_ROOT / normalized.lstrip("/"))
+    path = Path(normalized).resolve()
     try:
         path.relative_to(ALLOWED_ROOT)
     except ValueError as exc:

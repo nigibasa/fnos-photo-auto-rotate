@@ -1,5 +1,5 @@
 appname               = fnos-photo-auto-rotate
-version               = 0.1.1
+version               = 0.1.2
 display_name          = 照片自动回正
 desc                  = 批量识别并修正照片方向，支持安全扫描、原图备份和人工复核清单
 platform              = x86
@@ -15,4 +15,4 @@ service_port          = 8321
 checkport             = false
 source                = thirdparty
 checksum              =
-fpk_version           = 0.1.1-r1
+fpk_version           = 0.1.2-r1

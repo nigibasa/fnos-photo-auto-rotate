@@ -29,14 +29,15 @@
 默认挂载：
 
 ```text
-/vol1                         -> /storage/vol1
+/vol1                                -> /storage/vol1
+/vol2                                -> /storage/vol2
 /vol1/docker/fnos-photo-auto-rotate -> /data
 ```
 
-如果照片位于 `/vol2`，请修改 `fpk/docker/docker-compose.yaml` 后重新构建 FPK，或在飞牛 Docker 项目中增加：
+网页中选择 `/vol2/1000/photos/Moments` 时，容器内显示的路径是：
 
-```yaml
-- /vol2:/storage/vol2
+```text
+/storage/vol2/1000/photos/Moments
 ```
 
 ## 安全设计
@@ -59,7 +60,7 @@ docker build -t fnos-photo-auto-rotate:dev .
 
 ```sh
 python build_fpk.py \
-  --image ghcr.io/你的用户名/fnos-photo-auto-rotate:0.1.1 \
+  --image ghcr.io/你的用户名/fnos-photo-auto-rotate:0.1.2 \
   --platform x86
 ```
 

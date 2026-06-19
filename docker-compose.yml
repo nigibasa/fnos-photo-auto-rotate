@@ -10,4 +10,5 @@ services:
       DATA_DIR: /data
     volumes:
       - /vol1:/storage/vol1
+      - /vol2:/storage/vol2
       - /vol1/docker/fnos-photo-auto-rotate:/data
