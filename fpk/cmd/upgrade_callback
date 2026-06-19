@@ -1,5 +1,4 @@
 #!/bin/bash
-set -eu
-mkdir -p /vol1/docker/fnos-photo-auto-rotate/logs
-mkdir -p /vol1/docker/fnos-photo-auto-rotate/backups
+mkdir -p /vol1/docker/fnos-photo-auto-rotate/logs 2>/dev/null || true
+mkdir -p /vol1/docker/fnos-photo-auto-rotate/backups 2>/dev/null || true
 exit 0

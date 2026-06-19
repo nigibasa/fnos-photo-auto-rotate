@@ -1,5 +1,6 @@
 #!/bin/bash
-set -eu
-mkdir -p /vol1/docker/fnos-photo-auto-rotate/logs
-mkdir -p /vol1/docker/fnos-photo-auto-rotate/backups
+# 数据目录最终由 Docker 以宿主机权限创建。这里仅做提前创建尝试，
+# 不能因为 package 用户没有 /vol1/docker 写权限而中断安装。
+mkdir -p /vol1/docker/fnos-photo-auto-rotate/logs 2>/dev/null || true
+mkdir -p /vol1/docker/fnos-photo-auto-rotate/backups 2>/dev/null || true
 exit 0

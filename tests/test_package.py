@@ -24,7 +24,7 @@ class PackageTests(unittest.TestCase):
                     sys.executable,
                     str(ROOT / "build_fpk.py"),
                     "--image",
-                    "ghcr.io/example/fnos-photo-auto-rotate:0.1.0",
+                    "ghcr.io/example/fnos-photo-auto-rotate:0.1.1",
                     "--platform",
                     "x86",
                     "--output",

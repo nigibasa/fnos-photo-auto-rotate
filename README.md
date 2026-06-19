@@ -59,7 +59,7 @@ docker build -t fnos-photo-auto-rotate:dev .
 
 ```sh
 python build_fpk.py \
-  --image ghcr.io/你的用户名/fnos-photo-auto-rotate:0.1.0 \
+  --image ghcr.io/你的用户名/fnos-photo-auto-rotate:0.1.1 \
   --platform x86
 ```
 
