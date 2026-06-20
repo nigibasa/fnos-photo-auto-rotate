@@ -21,11 +21,15 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install safety-test dependencies
+      - name: Install ExifTool
         run: |
           sudo apt-get update
           sudo apt-get install -y libimage-exiftool-perl
+      - name: Install Python dependencies
+        run: |
           python -m pip install pillow numpy==2.2.6 opencv-python-headless==4.10.0.84
+      - name: Download pinned YuNet model
+        run: |
           curl -fsSL \
             https://raw.githubusercontent.com/opencv/opencv_zoo/47534e27c9851bb1128ccc0102f1145e27f23f98/models/face_detection_yunet/face_detection_yunet_2023mar.onnx \
             -o /tmp/face_detection_yunet.onnx
