@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import csv
 import json
 import os
 import subprocess
@@ -29,7 +30,6 @@ DEFAULT_CONFIG = {
     "allow_180": False,
     "min_age_minutes": 10,
     "backup": True,
-    "apply_face_suggestions": False,
 }
 
 
@@ -67,7 +67,6 @@ def save_config(data: dict) -> dict:
         "allow_180": bool(data.get("allow_180", False)),
         "min_age_minutes": max(0, min(10080, int(data.get("min_age_minutes", 10)))),
         "backup": bool(data.get("backup", True)),
-        "apply_face_suggestions": bool(data.get("apply_face_suggestions", False)),
     }
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     temp = CONFIG_FILE.with_suffix(".tmp")
@@ -102,32 +101,32 @@ class Job:
         with self.lock:
             if self.process is not None and self.process.poll() is None:
                 raise RuntimeError("已有任务正在运行")
-            command = [
-                "python3",
-                str(ROTATOR_SCRIPT),
-                "--source",
-                config["source"],
-                "--work",
-                str(DATA_DIR),
-                "--mode",
-                mode,
-                "--recursive",
-                "yes" if config["recursive"] else "no",
-                "--min-confidence",
-                str(config["min_confidence"]),
-                "--allow-180",
-                "yes" if config["allow_180"] else "no",
-                "--min-age-minutes",
-                str(config["min_age_minutes"]),
-                "--backup",
-                "yes" if config["backup"] else "no",
-                "--apply-face-suggestions",
-                "yes" if config["apply_face_suggestions"] else "no",
-            ]
-            if input_csv is not None:
+            command = ["python3", str(ROTATOR_SCRIPT), "--source", config["source"], "--work", str(DATA_DIR)]
+            if mode == "restore-task":
+                if input_csv is None:
+                    raise RuntimeError("缺少恢复清单")
+                command.extend(["--restore-task-csv", str(input_csv)])
+            else:
+                command.extend(
+                    [
+                        "--mode",
+                        mode,
+                        "--recursive",
+                        "yes" if config["recursive"] else "no",
+                        "--min-confidence",
+                        str(config["min_confidence"]),
+                        "--allow-180",
+                        "yes" if config["allow_180"] else "no",
+                        "--min-age-minutes",
+                        str(config["min_age_minutes"]),
+                        "--backup",
+                        "yes" if config["backup"] else "no",
+                    ]
+                )
+            if input_csv is not None and mode != "restore-task":
                 command.extend(["--input-csv", str(input_csv)])
             self.lines.clear()
-            task_label = "CSV 导入执行" if input_csv else mode
+            task_label = "恢复本次任务原图" if mode == "restore-task" else ("CSV 导入执行" if input_csv else mode)
             self.lines.append(f"启动 {task_label} 任务：{config['source']}")
             self.mode = mode
             self.started_at = datetime.now().astimezone().isoformat(timespec="seconds")
@@ -185,6 +184,26 @@ def list_logs() -> list[dict]:
     return result[:30]
 
 
+def latest_changed_task_log() -> tuple[Path | None, int]:
+    log_dir = DATA_DIR / "logs"
+    if not log_dir.exists():
+        return None, 0
+    paths = sorted(log_dir.glob("photo-rotate-apply-*.csv"), key=lambda item: item.stat().st_mtime, reverse=True)
+    for path in paths:
+        try:
+            with path.open("r", newline="", encoding="utf-8-sig") as csv_file:
+                count = sum(
+                    1
+                    for row in csv.DictReader(csv_file)
+                    if (row.get("状态") or "").strip() in {"rotated-face", "normalized-exif"}
+                )
+            if count:
+                return path, count
+        except (OSError, UnicodeError):
+            continue
+    return None, 0
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "PhotoAutoRotate/0.1"
 
@@ -210,7 +229,18 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         if parsed.path == "/api/status":
-            self.json_response({**JOB.status(), "logs": list_logs()})
+            recovery_log, recovery_count = latest_changed_task_log()
+            self.json_response(
+                {
+                    **JOB.status(),
+                    "logs": list_logs(),
+                    "task_recovery": {
+                        "available": recovery_log is not None,
+                        "count": recovery_count,
+                        "log": recovery_log.name if recovery_log else None,
+                    },
+                }
+            )
             return
         if parsed.path == "/api/config":
             self.json_response(load_config())
@@ -271,6 +301,8 @@ class Handler(BaseHTTPRequestHandler):
                 mode = payload.get("mode")
                 if mode not in {"scan", "apply"}:
                     raise ValueError("模式无效")
+                if mode == "apply":
+                    raise ValueError("为保护照片，正式处理已在紧急恢复版本中暂停；请先使用恢复按钮")
                 if mode == "apply" and payload.get("confirm") != "ROTATE":
                     raise ValueError("正式执行需要输入 ROTATE 确认")
                 config = save_config(payload.get("config", load_config()))
@@ -278,6 +310,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.json_response(JOB.status(), HTTPStatus.ACCEPTED)
                 return
             if self.path == "/api/run-csv":
+                raise ValueError("为保护照片，CSV 正式执行已暂停；请先使用恢复按钮")
                 if payload.get("confirm") != "ROTATE":
                     raise ValueError("CSV 执行需要输入 ROTATE 确认")
                 name = Path(str(payload.get("name", "scan.csv"))).name
@@ -294,6 +327,16 @@ class Handler(BaseHTTPRequestHandler):
                 csv_path = IMPORT_DIR / f"{timestamp}-{name}"
                 csv_path.write_text(csv_text, encoding="utf-8")
                 JOB.start("apply", config, input_csv=csv_path)
+                self.json_response(JOB.status(), HTTPStatus.ACCEPTED)
+                return
+            if self.path == "/api/restore-task":
+                if payload.get("confirm") != "RESTORE":
+                    raise ValueError("恢复操作需要输入 RESTORE 确认")
+                config = save_config(payload.get("config", load_config()))
+                recovery_log, recovery_count = latest_changed_task_log()
+                if recovery_log is None or recovery_count == 0:
+                    raise ValueError("没有找到可恢复的任务记录")
+                JOB.start("restore-task", config, input_csv=recovery_log)
                 self.json_response(JOB.status(), HTTPStatus.ACCEPTED)
                 return
             if self.path == "/api/stop":

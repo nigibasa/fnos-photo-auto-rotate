@@ -11,7 +11,7 @@ permissions:
   packages: write
 
 env:
-  IMAGE_VERSION: "0.1.4"
+  IMAGE_VERSION: "0.1.5"
 
 jobs:
   docker:

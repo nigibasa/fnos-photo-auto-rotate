@@ -117,9 +117,8 @@
           <label class="toggle"><input id="recursive" type="checkbox" checked>递归扫描子文件夹</label>
           <label class="toggle"><input id="backup" type="checkbox" checked>正式执行前备份原图</label>
           <label class="toggle"><input id="allow180" type="checkbox">允许自动旋转 180°</label>
-          <label class="toggle"><input id="applyFace" type="checkbox">实验：正式执行人脸方向建议</label>
         </div>
-        <p class="status-meta">建议保持实验选项关闭。EXIF 固化不会改变肉眼看到的方向；人脸结果只写入建议清单。</p>
+        <p class="status-meta">EXIF 固化不会改变肉眼看到的方向；人脸识别结果仅写入建议清单，程序不会执行。</p>
 
         <label for="confidence">最低可信度（推荐 1.35）</label>
         <input id="confidence" type="number" min="1.01" max="10" step="0.05" value="1.35">
@@ -129,14 +128,14 @@
 
         <div class="actions">
           <button class="primary" id="scanBtn">安全扫描，不修改</button>
-          <button class="danger" id="applyBtn">备份并正式回正</button>
+          <button class="danger" id="applyBtn" disabled>正式处理已暂停</button>
         </div>
         <label for="csvFile">已有扫描清单</label>
         <div class="path-row">
           <input id="csvFile" type="file" accept=".csv,text/csv">
-          <button id="runCsvBtn">导入 CSV 并执行</button>
+          <button id="runCsvBtn" disabled>CSV 执行已暂停</button>
         </div>
-        <p class="status-meta">兼容旧版清单；默认仅执行 EXIF 项，人脸建议不会修改照片。</p>
+        <p class="status-meta">紧急恢复版本已暂停所有照片写入。请先从备份恢复异常照片。</p>
         <div class="notice" id="notice"></div>
       </article>
 
@@ -148,6 +147,7 @@
         </div>
         <pre id="terminal">这里会显示扫描进度和最终统计。</pre>
         <button id="stopBtn" style="margin-top:10px" disabled>停止当前任务</button>
+        <button id="restoreTaskBtn" class="danger" style="margin-top:10px;display:none">从备份恢复本次全部改动</button>
       </article>
 
       <article class="card logs">
@@ -170,7 +170,7 @@
     const $ = id => document.getElementById(id);
     const fields = {
       source: $("source"), recursive: $("recursive"), backup: $("backup"),
-      allow180: $("allow180"), applyFace: $("applyFace"),
+      allow180: $("allow180"),
       confidence: $("confidence"), age: $("age")
     };
     let browserPath = "/storage";
@@ -180,7 +180,6 @@
         source: fields.source.value.trim(),
         recursive: fields.recursive.checked,
         backup: fields.backup.checked,
-        apply_face_suggestions: fields.applyFace.checked,
         allow_180: fields.allow180.checked,
         min_confidence: Number(fields.confidence.value),
         min_age_minutes: Number(fields.age.value)
@@ -198,7 +197,6 @@
       fields.source.value = data.source;
       fields.recursive.checked = data.recursive;
       fields.backup.checked = data.backup;
-      fields.applyFace.checked = data.apply_face_suggestions;
       fields.allow180.checked = data.allow_180;
       fields.confidence.value = data.min_confidence;
       fields.age.value = data.min_age_minutes;
@@ -207,8 +205,7 @@
       $("notice").textContent = "";
       let confirm = "";
       if (mode === "apply") {
-        const faceWarning = fields.applyFace.checked ? "你已开启实验性人脸旋转，可能存在误判。" : "本次只自动固化可靠的 EXIF 方向，人脸建议不会修改照片。";
-        confirm = prompt(`正式执行会修改照片像素。${faceWarning} 原图将按设置备份。请输入 ROTATE 继续：`) || "";
+        confirm = prompt("本次只自动固化可靠的 EXIF 方向，人脸建议不会修改照片。原图将按设置备份。请输入 ROTATE 继续：") || "";
         if (confirm !== "ROTATE") return;
       }
       try {
@@ -242,8 +239,12 @@
         $("terminal").scrollTop = $("terminal").scrollHeight;
         $("stopBtn").disabled = !data.running;
         $("scanBtn").disabled = data.running;
-        $("applyBtn").disabled = data.running;
-        $("runCsvBtn").disabled = data.running;
+        $("applyBtn").disabled = true;
+        $("runCsvBtn").disabled = true;
+        const recovery = data.task_recovery || {};
+        $("restoreTaskBtn").style.display = recovery.available ? "inline-block" : "none";
+        $("restoreTaskBtn").disabled = data.running;
+        $("restoreTaskBtn").textContent = recovery.available ? `从备份恢复本次 ${recovery.count} 张照片` : "从备份恢复本次全部改动";
         $("logs").innerHTML = data.logs.length ? data.logs.map(log =>
           `<a class="log-item" href="${log.url}"><strong>${log.name}</strong><span>${log.modified} · ${(log.size/1024).toFixed(1)} KB</span></a>`
         ).join("") : '<span class="status-meta">暂无结果文件</span>';
@@ -271,6 +272,14 @@
     $("scanBtn").onclick = () => run("scan");
     $("applyBtn").onclick = () => run("apply");
     $("runCsvBtn").onclick = runCsv;
+    $("restoreTaskBtn").onclick = async () => {
+      const confirm = prompt("检测到照片异常。此操作会从原图备份恢复本次任务改动的全部照片，包括 EXIF 固化和人脸旋转。请输入 RESTORE 继续：") || "";
+      if (confirm !== "RESTORE") return;
+      try {
+        await api("/api/restore-task", {method:"POST", body:JSON.stringify({confirm, config:config()})});
+        await refresh();
+      } catch (error) { showError(error); }
+    };
     $("stopBtn").onclick = async () => { await api("/api/stop", {method:"POST", body:"{}"}); refresh(); };
     loadConfig().catch(showError);
     refresh();

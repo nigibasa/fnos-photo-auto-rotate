@@ -293,6 +293,43 @@ def iter_csv_decisions(csv_path: Path, source: Path):
             yield safe_csv_path(source, relative), relative, transform, reason, is_exif
 
 
+def restore_task_changes(csv_path: Path, source: Path, work: Path) -> int:
+    backup_root = work / "backups"
+    restored = 0
+    missing = 0
+    failed = 0
+
+    with csv_path.open("r", newline="", encoding="utf-8-sig") as csv_file:
+        reader = csv.DictReader(csv_file)
+        required = {"状态", "相对路径"}
+        if not reader.fieldnames or not required.issubset(reader.fieldnames):
+            raise ValueError("恢复清单格式不兼容")
+
+        for row in reader:
+            if (row.get("状态") or "").strip() not in {"rotated-face", "normalized-exif"}:
+                continue
+            relative = (row.get("相对路径") or "").strip()
+            target = safe_csv_path(source, relative)
+            backup = safe_csv_path(backup_root, relative)
+            if not backup.is_file():
+                missing += 1
+                print(f"[restore-missing] {relative}")
+                continue
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(backup, target)
+                restored += 1
+                print(f"[restored      ] {relative}")
+            except Exception as exc:
+                failed += 1
+                print(f"[restore-error ] {relative}: {exc}", file=sys.stderr)
+
+    print("")
+    print(f"已恢复本次任务改动：{restored} 张")
+    print(f"缺少备份：{missing} 张；恢复失败：{failed} 张")
+    return 0 if missing == 0 and failed == 0 else 1
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--source", type=Path, required=True)
@@ -305,6 +342,7 @@ def main() -> int:
     parser.add_argument("--backup", default="yes")
     parser.add_argument("--apply-face-suggestions", default="no")
     parser.add_argument("--input-csv", type=Path)
+    parser.add_argument("--restore-task-csv", type=Path)
     args = parser.parse_args()
 
     source = args.source.resolve()
@@ -314,6 +352,9 @@ def main() -> int:
     log_path = work / "logs" / f"photo-rotate-{args.mode}-{timestamp}.csv"
     log_path.parent.mkdir(parents=True, exist_ok=True)
     backup_root = work / "backups"
+
+    if args.restore_task_csv:
+        return restore_task_changes(args.restore_task_csv.resolve(), source, work)
 
     cascade_candidates = []
     cv2_data = getattr(cv2, "data", None)
@@ -414,14 +455,8 @@ def main() -> int:
                         status = "would-normalize-exif"
                 elif decision.action == "face-suggest":
                     counts["face-suggest"] += 1
-                    if args.mode == "apply" and yes(args.apply_face_suggestions):
-                        if yes(args.backup):
-                            backup_path = str(backup_file(source, path, backup_root))
-                        apply_transform(path, decision.transform)
-                        counts["face-rotated"] += 1
-                        status = "rotated-face"
-                    else:
-                        status = "face-suggest"
+                    # Haar 人脸方向检测误报率较高，只保留建议，永不自动修改照片。
+                    status = "face-suggest"
                 elif decision.action in counts:
                     counts[decision.action] += 1
 

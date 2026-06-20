@@ -24,7 +24,7 @@ class PackageTests(unittest.TestCase):
                     sys.executable,
                     str(ROOT / "build_fpk.py"),
                     "--image",
-                    "ghcr.io/example/fnos-photo-auto-rotate:0.1.4",
+                    "ghcr.io/example/fnos-photo-auto-rotate:0.1.5",
                     "--platform",
                     "x86",
                     "--output",
@@ -51,7 +51,10 @@ class PackageTests(unittest.TestCase):
         self.assertIn("would-normalize-exif", rotator)
         self.assertIn("当前 EXIF 已是正常方向", rotator)
         self.assertIn("/api/run-csv", server)
-        self.assertIn("导入 CSV 并执行", web)
+        self.assertIn("/api/restore-task", server)
+        self.assertNotIn('id="applyFace"', web)
+        self.assertIn("从备份恢复本次全部改动", web)
+        self.assertIn("CSV 执行已暂停", web)
 
 
 if __name__ == "__main__":
