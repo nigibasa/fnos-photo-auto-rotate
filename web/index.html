@@ -3,299 +3,365 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>照片自动回正</title>
+  <title>照片方向安全修正 2.0</title>
   <style>
     :root {
-      --ink: #18201d;
-      --paper: #f2efe6;
-      --card: #fffdf7;
-      --line: #c9c2b3;
-      --green: #1f6b4f;
-      --green-bright: #56d397;
-      --orange: #e7682f;
-      --muted: #6f746d;
-      --shadow: 0 18px 50px rgba(41, 38, 30, .12);
+      --ink:#17201c; --paper:#f3f0e7; --card:#fffdf8; --line:#c9c2b2;
+      --green:#17694b; --mint:#55d39a; --orange:#e96c30; --muted:#6d746d;
     }
-    * { box-sizing: border-box; }
+    * { box-sizing:border-box }
     body {
-      margin: 0;
-      color: var(--ink);
-      background:
-        linear-gradient(rgba(24,32,29,.035) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(24,32,29,.035) 1px, transparent 1px),
-        var(--paper);
-      background-size: 28px 28px;
-      font-family: "Noto Serif SC", "Songti SC", Georgia, serif;
+      margin:0; color:var(--ink); background:
+        linear-gradient(rgba(23,32,28,.035) 1px,transparent 1px),
+        linear-gradient(90deg,rgba(23,32,28,.035) 1px,transparent 1px),var(--paper);
+      background-size:28px 28px;
+      font-family:"Noto Sans SC","Microsoft YaHei",sans-serif;
     }
-    body::before {
-      content: "";
-      position: fixed; inset: 0; pointer-events: none;
-      background: radial-gradient(circle at 82% 4%, rgba(86,211,151,.2), transparent 25%),
-                  radial-gradient(circle at 3% 74%, rgba(231,104,47,.1), transparent 22%);
+    button,input,select { font:inherit }
+    .shell { max-width:1320px; margin:auto; padding:36px 24px 72px }
+    header { display:flex; justify-content:space-between; gap:24px; align-items:end; margin-bottom:24px }
+    .eyebrow { color:var(--green); font:700 12px/1 monospace; letter-spacing:.17em }
+    h1 { font-family:"Noto Serif SC","Songti SC",serif; font-size:clamp(38px,6vw,72px); line-height:1; margin:10px 0 }
+    .lede { max-width:800px; color:var(--muted); line-height:1.8; margin:0 }
+    .safety { max-width:360px; padding:15px 18px; border:2px solid var(--ink); background:var(--mint); box-shadow:6px 6px 0 var(--ink); font-weight:700 }
+    .top-grid { display:grid; grid-template-columns:1fr 1fr; gap:18px }
+    .card { background:rgba(255,253,248,.96); border:1px solid var(--line); padding:22px; box-shadow:0 18px 45px rgba(35,32,24,.1) }
+    h2 { margin:0 0 16px; font-family:"Noto Serif SC","Songti SC",serif }
+    label { display:block; font-size:13px; font-weight:700; margin:13px 0 7px }
+    input[type=text],input[type=number],select { width:100%; padding:11px 12px; border:1px solid var(--line); background:white }
+    .path-row { display:grid; grid-template-columns:1fr auto; gap:8px }
+    .checks { display:flex; flex-wrap:wrap; gap:18px; margin:16px 0 }
+    .checks label { display:flex; gap:8px; align-items:center; margin:0; font-weight:500 }
+    input[type=checkbox] { width:18px; height:18px; accent-color:var(--green) }
+    button { border:1px solid var(--ink); background:white; padding:11px 15px; cursor:pointer }
+    button:hover:not(:disabled) { transform:translate(-1px,-1px); box-shadow:3px 3px 0 var(--ink) }
+    button:disabled { opacity:.45; cursor:not-allowed }
+    .primary { background:var(--green); color:white }
+    .danger { background:var(--orange); color:white }
+    .actions { display:flex; flex-wrap:wrap; gap:9px; margin-top:18px }
+    .hint,.meta { color:var(--muted); font-size:12px; line-height:1.6 }
+    .notice { color:#a43d17; min-height:22px; margin-top:10px; white-space:pre-wrap }
+    .status { padding:13px 15px; border-left:6px solid var(--line); background:#f6f2e8; margin-bottom:12px }
+    .status.running { border-color:var(--mint) }
+    .status.failed { border-color:var(--orange) }
+    .status strong { display:block; font-size:18px }
+    pre { height:265px; margin:0; overflow:auto; padding:14px; background:#17211d; color:#cce7d8; font:12px/1.6 Consolas,monospace; white-space:pre-wrap }
+    .review { margin-top:18px }
+    .review-head { display:flex; justify-content:space-between; align-items:end; gap:15px; margin-bottom:15px }
+    .review-controls { display:flex; gap:8px; align-items:center; flex-wrap:wrap }
+    .review-controls select { width:auto }
+    .gallery { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:14px }
+    .photo-card { border:1px solid var(--line); background:#fff; overflow:hidden }
+    .photo-card.selected { outline:4px solid var(--mint) }
+    .preview {
+      height:235px; display:grid; place-items:center; overflow:hidden; background:#151816;
     }
-    button, input { font: inherit; }
-    .shell { max-width: 1180px; margin: 0 auto; padding: 46px 26px 70px; position: relative; }
-    header { display: grid; grid-template-columns: 1fr auto; align-items: end; gap: 28px; margin-bottom: 30px; }
-    .eyebrow { font: 700 12px/1.2 ui-monospace, Consolas, monospace; letter-spacing: .18em; color: var(--green); text-transform: uppercase; }
-    h1 { margin: 9px 0 7px; font-size: clamp(38px, 6vw, 72px); line-height: .95; letter-spacing: -.055em; font-weight: 800; }
-    .lede { margin: 0; max-width: 670px; color: var(--muted); font-size: 16px; line-height: 1.8; }
-    .seal { width: 116px; height: 116px; border: 2px solid var(--ink); border-radius: 50%; display: grid; place-items: center; transform: rotate(5deg); background: var(--green-bright); box-shadow: 7px 7px 0 var(--ink); }
-    .seal svg { width: 70px; height: 70px; }
-    .grid { display: grid; grid-template-columns: 1.1fr .9fr; gap: 20px; }
-    .card { background: color-mix(in srgb, var(--card) 94%, transparent); border: 1px solid var(--line); box-shadow: var(--shadow); padding: 24px; }
-    .card h2 { font-size: 20px; margin: 0 0 18px; display: flex; justify-content: space-between; align-items: center; }
-    .tag { font: 700 11px/1 ui-monospace, Consolas, monospace; letter-spacing: .08em; padding: 7px 9px; border: 1px solid var(--line); color: var(--muted); }
-    label { display: block; font-size: 13px; font-weight: 700; margin: 17px 0 7px; }
-    input[type="text"], input[type="number"] { width: 100%; border: 1px solid var(--line); background: #fff; color: var(--ink); padding: 12px 13px; outline: none; border-radius: 0; }
-    input:focus { border-color: var(--green); box-shadow: 0 0 0 3px rgba(31,107,79,.12); }
-    .path-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
-    .toggle-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 18px; margin-top: 18px; }
-    .toggle { display: flex; align-items: center; gap: 10px; margin: 0; font-weight: 500; cursor: pointer; }
-    .toggle input { accent-color: var(--green); width: 18px; height: 18px; }
-    .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 24px; }
-    button { border: 1px solid var(--ink); padding: 12px 16px; cursor: pointer; background: #fff; color: var(--ink); transition: transform .15s, box-shadow .15s, background .15s; }
-    button:hover { transform: translate(-2px, -2px); box-shadow: 4px 4px 0 var(--ink); }
-    button:disabled { opacity: .45; cursor: not-allowed; transform: none; box-shadow: none; }
-    .primary { background: var(--green); color: #fff; }
-    .danger { background: var(--orange); color: #fff; }
-    .ghost { padding: 10px 13px; }
-    .status-strip { border-left: 6px solid var(--line); padding: 14px 16px; background: #f7f4eb; margin-bottom: 14px; }
-    .status-strip.running { border-color: var(--green-bright); }
-    .status-strip.failed { border-color: var(--orange); }
-    .status-title { font-size: 18px; font-weight: 800; }
-    .status-meta { color: var(--muted); font: 12px/1.6 ui-monospace, Consolas, monospace; margin-top: 5px; }
-    pre { margin: 0; height: 352px; overflow: auto; padding: 16px; background: #17211d; color: #cde7d9; font: 12px/1.65 ui-monospace, Consolas, monospace; white-space: pre-wrap; }
-    .logs { grid-column: 1 / -1; }
-    .log-list { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
-    .log-item { border-top: 2px solid var(--ink); padding: 12px 4px; text-decoration: none; color: inherit; }
-    .log-item strong { display: block; font: 12px/1.5 ui-monospace, Consolas, monospace; overflow-wrap: anywhere; }
-    .log-item span { color: var(--muted); font-size: 12px; }
-    dialog { width: min(680px, calc(100vw - 28px)); border: 1px solid var(--ink); padding: 0; box-shadow: 10px 10px 0 var(--ink); background: var(--card); }
-    dialog::backdrop { background: rgba(15,22,19,.65); backdrop-filter: blur(3px); }
-    .dialog-head { padding: 18px 20px; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; }
-    .browser { padding: 12px 20px 20px; max-height: 55vh; overflow: auto; }
-    .dir { width: 100%; text-align: left; border-width: 0 0 1px; border-color: var(--line); background: transparent; box-shadow: none !important; transform: none !important; }
-    .notice { min-height: 24px; margin-top: 10px; color: var(--orange); font-size: 13px; }
-    @media (max-width: 820px) {
-      header { grid-template-columns: 1fr; }
-      .seal { display: none; }
-      .grid { grid-template-columns: 1fr; }
-      .logs { grid-column: auto; }
-      .log-list { grid-template-columns: 1fr; }
-      .toggle-row { grid-template-columns: 1fr; }
-    }
+    .preview img { max-width:88%; max-height:88%; object-fit:contain; transition:transform .2s }
+    .photo-body { padding:12px }
+    .filename { font:700 12px/1.5 Consolas,monospace; overflow-wrap:anywhere; min-height:38px }
+    .badge { display:inline-block; background:#e8eee9; padding:3px 7px; margin:7px 0; font-size:11px }
+    .angle-row { display:grid; grid-template-columns:repeat(3,1fr); gap:6px; margin:9px 0 }
+    .angle-row button { padding:7px 4px }
+    .select-row { display:flex; align-items:center; gap:8px; font-weight:700; font-size:13px }
+    .empty { grid-column:1/-1; padding:50px; text-align:center; color:var(--muted); border:1px dashed var(--line) }
+    .pager { display:flex; justify-content:center; gap:10px; align-items:center; margin-top:16px }
+    dialog { width:min(720px,calc(100vw - 30px)); border:1px solid var(--ink); padding:0; box-shadow:9px 9px 0 var(--ink) }
+    dialog::backdrop { background:rgba(15,20,17,.65) }
+    .dialog-head { display:flex; justify-content:space-between; padding:16px 18px; border-bottom:1px solid var(--line) }
+    .browser { padding:16px 18px; max-height:60vh; overflow:auto }
+    .dir { display:block; width:100%; text-align:left; border-width:0 0 1px; border-color:var(--line) }
+    @media(max-width:1000px){.gallery{grid-template-columns:repeat(3,1fr)}}
+    @media(max-width:760px){.top-grid{grid-template-columns:1fr}.gallery{grid-template-columns:repeat(2,1fr)}header{display:block}.safety{margin-top:18px}}
+    @media(max-width:480px){.gallery{grid-template-columns:1fr}.shell{padding:22px 12px 55px}}
   </style>
 </head>
 <body>
-  <main class="shell">
-    <header>
-      <div>
-        <div class="eyebrow">fnOS · Photo orientation workshop</div>
-        <h1>照片自动回正</h1>
-        <p class="lede">先依据 EXIF 确定方向，再比较四个角度的人脸检测结果。判断含糊时保持原图不动——宁可留给你复核，也不自作聪明。</p>
-      </div>
-      <div class="seal" aria-hidden="true">
-        <svg viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="4">
-          <rect x="10" y="15" width="38" height="32"/>
-          <circle cx="23" cy="26" r="5"/>
-          <path d="M13 43l11-10 8 7 7-6 8 7M48 11c7 3 10 10 8 17M55 29l2-5 5 2"/>
-        </svg>
-      </div>
-    </header>
-
-    <section class="grid">
-      <article class="card">
-        <h2>扫描设置 <span class="tag">01 / SETUP</span></h2>
-        <label for="source">照片目录</label>
-        <div class="path-row">
-          <input id="source" type="text" value="/storage/vol1">
-          <button class="ghost" id="browseBtn">浏览</button>
-        </div>
-        <p class="status-meta">可直接粘贴飞牛路径，例如 /vol2/1000/photos/Moments；系统会自动转换。</p>
-
-        <div class="toggle-row">
-          <label class="toggle"><input id="recursive" type="checkbox" checked>递归扫描子文件夹</label>
-          <label class="toggle"><input id="backup" type="checkbox" checked>正式执行前备份原图</label>
-          <label class="toggle"><input id="allow180" type="checkbox">允许自动旋转 180°</label>
-        </div>
-        <p class="status-meta">EXIF 固化不会改变肉眼看到的方向；人脸识别结果仅写入建议清单，程序不会执行。</p>
-
-        <label for="confidence">最低可信度（推荐 1.35）</label>
-        <input id="confidence" type="number" min="1.01" max="10" step="0.05" value="1.35">
-
-        <label for="age">跳过最近修改的照片（分钟）</label>
-        <input id="age" type="number" min="0" max="10080" value="10">
-
-        <div class="actions">
-          <button class="primary" id="scanBtn">安全扫描，不修改</button>
-          <button class="danger" id="applyBtn" disabled>正式处理已暂停</button>
-        </div>
-        <label for="csvFile">已有扫描清单</label>
-        <div class="path-row">
-          <input id="csvFile" type="file" accept=".csv,text/csv">
-          <button id="runCsvBtn" disabled>CSV 执行已暂停</button>
-        </div>
-        <p class="status-meta">紧急恢复版本已暂停所有照片写入。请先从备份恢复异常照片。</p>
-        <div class="notice" id="notice"></div>
-      </article>
-
-      <article class="card">
-        <h2>任务现场 <span class="tag">02 / LIVE</span></h2>
-        <div id="status" class="status-strip">
-          <div class="status-title">等待任务</div>
-          <div class="status-meta">建议先运行安全扫描</div>
-        </div>
-        <pre id="terminal">这里会显示扫描进度和最终统计。</pre>
-        <button id="stopBtn" style="margin-top:10px" disabled>停止当前任务</button>
-        <button id="restoreTaskBtn" class="danger" style="margin-top:10px;display:none">从备份恢复本次全部改动</button>
-        <button id="refreshTaskBtn" style="margin-top:10px;display:none">校验原图并刷新飞牛索引</button>
-      </article>
-
-      <article class="card logs">
-        <h2>结果清单 <span class="tag">03 / CSV</span></h2>
-        <div id="logs" class="log-list"><span class="status-meta">暂无结果文件</span></div>
-      </article>
-    </section>
-  </main>
-
-  <dialog id="browserDialog">
-    <div class="dialog-head"><strong>选择照片文件夹</strong><button id="closeBrowser">关闭</button></div>
-    <div class="browser">
-      <div id="browserPath" class="status-meta"></div>
-      <button id="chooseHere" class="primary" style="margin:12px 0">选择当前文件夹</button>
-      <div id="directories"></div>
+<main class="shell">
+  <header>
+    <div>
+      <div class="eyebrow">FNOS · METADATA-ONLY ORIENTATION</div>
+      <h1>照片方向安全修正 2.0</h1>
+      <p class="lede">扫描只读；程序只给方向建议。你在缩略图中确认后，插件仅修改 JPEG 的 EXIF 显示方向，不旋转、不裁剪、不重新压缩照片像素。</p>
     </div>
-  </dialog>
+    <div class="safety">写入前备份，写入后逐像素比对。任何变化或不一致都会拒绝替换原图。</div>
+  </header>
 
-  <script>
-    const $ = id => document.getElementById(id);
-    const fields = {
-      source: $("source"), recursive: $("recursive"), backup: $("backup"),
-      allow180: $("allow180"),
-      confidence: $("confidence"), age: $("age")
-    };
-    let browserPath = "/storage";
+  <section class="top-grid">
+    <article class="card">
+      <h2>① 只读扫描</h2>
+      <label for="source">照片目录</label>
+      <div class="path-row">
+        <input id="source" type="text" value="/storage/vol1">
+        <button id="browseBtn">浏览</button>
+      </div>
+      <p class="hint">可直接粘贴飞牛路径，例如 /vol2/1000/photos/Moments。</p>
+      <div class="checks">
+        <label><input id="recursive" type="checkbox" checked>扫描子文件夹</label>
+        <label><input id="allow180" type="checkbox">提供 180° 建议</label>
+      </div>
+      <label for="confidence">建议阈值（越大越谨慎）</label>
+      <input id="confidence" type="number" min="1.01" max="10" step=".05" value="1.35">
+      <label for="age">跳过最近修改的照片（分钟）</label>
+      <input id="age" type="number" min="0" max="10080" value="10">
+      <div class="actions">
+        <button class="primary" id="scanBtn">开始只读扫描</button>
+        <button id="stopBtn" disabled>停止任务</button>
+      </div>
+      <div id="notice" class="notice"></div>
+    </article>
 
-    function config() {
-      return {
-        source: fields.source.value.trim(),
-        recursive: fields.recursive.checked,
-        backup: fields.backup.checked,
-        allow_180: fields.allow180.checked,
-        min_confidence: Number(fields.confidence.value),
-        min_age_minutes: Number(fields.age.value)
-      };
+    <article class="card">
+      <h2>任务现场</h2>
+      <div id="status" class="status">
+        <strong>等待任务</strong>
+        <span class="meta">请先扫描一个小目录验证效果。</span>
+      </div>
+      <pre id="terminal">这里会显示扫描、校验和写入进度。</pre>
+      <div class="actions">
+        <button class="danger" id="rollbackBtn" hidden>回滚最近一次 2.0 任务</button>
+        <a id="exportScan" hidden><button>下载扫描清单</button></a>
+      </div>
+    </article>
+  </section>
+
+  <section class="card review">
+    <div class="review-head">
+      <div>
+        <h2>② 人工确认</h2>
+        <div id="selectionMeta" class="meta">扫描完成后会显示候选照片。</div>
+      </div>
+      <div class="review-controls">
+        <select id="filter">
+          <option value="suggested">有明确建议</option>
+          <option value="manual-review">方向不确定</option>
+          <option value="probably-correct">可能已正确</option>
+        </select>
+        <button id="selectPageBtn">勾选本页建议</button>
+        <button class="danger" id="applyBtn" disabled>应用已确认方向</button>
+      </div>
+    </div>
+    <div id="gallery" class="gallery"><div class="empty">尚无扫描结果</div></div>
+    <div class="pager">
+      <button id="prevBtn" disabled>上一页</button>
+      <span id="pageMeta" class="meta">第 0 页</span>
+      <button id="nextBtn" disabled>下一页</button>
+    </div>
+  </section>
+</main>
+
+<dialog id="browserDialog">
+  <div class="dialog-head"><strong>选择照片文件夹</strong><button id="closeBrowser">关闭</button></div>
+  <div class="browser">
+    <div id="browserPath" class="meta"></div>
+    <button id="chooseHere" class="primary" style="margin:12px 0">选择当前文件夹</button>
+    <div id="directories"></div>
+  </div>
+</dialog>
+
+<script>
+const $ = id => document.getElementById(id);
+const fields = {
+  source:$("source"), recursive:$("recursive"), allow180:$("allow180"),
+  confidence:$("confidence"), age:$("age")
+};
+const pageSize = 40;
+let browserPath = "/storage";
+let scanName = "";
+let currentItems = [];
+let offset = 0;
+let total = 0;
+let lastRunning = false;
+const selections = new Map();
+
+function esc(value) {
+  return String(value ?? "").replace(/[&<>"']/g, ch => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[ch]));
+}
+function config() {
+  return {
+    source:fields.source.value.trim(), recursive:fields.recursive.checked,
+    allow_180:fields.allow180.checked, min_confidence:Number(fields.confidence.value),
+    min_age_minutes:Number(fields.age.value)
+  };
+}
+async function api(path, options={}) {
+  const response = await fetch(path, {headers:{"Content-Type":"application/json"}, ...options});
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || "请求失败");
+  return data;
+}
+function showError(error) { $("notice").textContent = error.message || String(error); }
+function rotationStyle(angle) { return `transform:rotate(${Number(angle)||0}deg)`; }
+
+async function loadConfig() {
+  const data = await api("/api/config");
+  fields.source.value = data.source;
+  fields.recursive.checked = data.recursive;
+  fields.allow180.checked = data.allow_180;
+  fields.confidence.value = data.min_confidence;
+  fields.age.value = data.min_age_minutes;
+}
+async function startScan() {
+  $("notice").textContent = "";
+  try {
+    await api("/api/scan", {method:"POST", body:JSON.stringify({config:config()})});
+    selections.clear();
+    await refresh();
+  } catch (error) { showError(error); }
+}
+async function loadCandidates(reset=false) {
+  if (!scanName) return;
+  if (reset) offset = 0;
+  const filter = $("filter").value;
+  const data = await api(`/api/candidates?scan=${encodeURIComponent(scanName)}&status=${encodeURIComponent(filter)}&offset=${offset}&limit=${pageSize}`);
+  currentItems = data.items;
+  total = data.total;
+  renderGallery();
+}
+function renderGallery() {
+  $("selectionMeta").textContent = `当前筛选 ${total} 张；已确认 ${selections.size} 张。只有勾选的照片才会写入 EXIF。`;
+  $("applyBtn").disabled = selections.size === 0 || lastRunning;
+  $("prevBtn").disabled = offset === 0;
+  $("nextBtn").disabled = offset + pageSize >= total;
+  $("pageMeta").textContent = total ? `第 ${Math.floor(offset/pageSize)+1} / ${Math.ceil(total/pageSize)} 页` : "无结果";
+  if (!currentItems.length) {
+    $("gallery").innerHTML = '<div class="empty">这个分类下没有照片。</div>';
+    return;
+  }
+  $("gallery").innerHTML = currentItems.map(item => {
+    const selected = selections.get(item.id);
+    const angle = selected?.angle ?? item.suggested_angle ?? 0;
+    const checked = selected ? "checked" : "";
+    const cls = selected ? "photo-card selected" : "photo-card";
+    const image = `/api/thumbnail?scan=${encodeURIComponent(scanName)}&id=${encodeURIComponent(item.id)}`;
+    const checkboxDisabled = angle ? "" : "disabled";
+    const angleLabel = angle ? `确认按 ${angle}° 显示` : "请先点击一个旋转方向";
+    return `<article class="${cls}" data-id="${esc(item.id)}">
+      <div class="preview"><img src="${image}" alt="" style="${rotationStyle(angle)}"></div>
+      <div class="photo-body">
+        <div class="filename">${esc(item.relative_path)}</div>
+        <span class="badge">${esc(item.reason)} · ${Number(item.confidence||0).toFixed(2)}</span>
+        <div class="angle-row">
+          <button data-angle="270">↶ 左转</button>
+          <button data-angle="180">倒转</button>
+          <button data-angle="90">右转 ↷</button>
+        </div>
+        <label class="select-row"><input type="checkbox" ${checked} ${checkboxDisabled}>${angleLabel}</label>
+      </div>
+    </article>`;
+  }).join("");
+}
+function chooseAngle(itemId, angle, forceSelect=true) {
+  const item = currentItems.find(entry => entry.id === itemId);
+  if (!item) return;
+  if (forceSelect) selections.set(itemId, {id:itemId, angle, path:item.relative_path});
+  renderGallery();
+}
+$("gallery").addEventListener("click", event => {
+  const card = event.target.closest(".photo-card");
+  if (!card) return;
+  const angleButton = event.target.closest("[data-angle]");
+  if (angleButton) chooseAngle(card.dataset.id, Number(angleButton.dataset.angle));
+});
+$("gallery").addEventListener("change", event => {
+  if (event.target.type !== "checkbox") return;
+  const card = event.target.closest(".photo-card");
+  const item = currentItems.find(entry => entry.id === card.dataset.id);
+  if (event.target.checked) {
+    const angle = item.suggested_angle;
+    if (!angle) {
+      event.target.checked = false;
+      return showError(new Error("请先点击左转、倒转或右转，再勾选确认。"));
     }
-    async function api(path, options={}) {
-      const response = await fetch(path, {headers: {"Content-Type": "application/json"}, ...options});
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "请求失败");
-      return data;
-    }
-    function showError(error) { $("notice").textContent = error.message || String(error); }
-    async function loadConfig() {
-      const data = await api("/api/config");
-      fields.source.value = data.source;
-      fields.recursive.checked = data.recursive;
-      fields.backup.checked = data.backup;
-      fields.allow180.checked = data.allow_180;
-      fields.confidence.value = data.min_confidence;
-      fields.age.value = data.min_age_minutes;
-    }
-    async function run(mode) {
-      $("notice").textContent = "";
-      let confirm = "";
-      if (mode === "apply") {
-        confirm = prompt("本次只自动固化可靠的 EXIF 方向，人脸建议不会修改照片。原图将按设置备份。请输入 ROTATE 继续：") || "";
-        if (confirm !== "ROTATE") return;
-      }
-      try {
-        await api("/api/run", {method: "POST", body: JSON.stringify({mode, confirm, config: config()})});
-        await refresh();
-      } catch (error) { showError(error); }
-    }
-    async function runCsv() {
-      $("notice").textContent = "";
-      const file = $("csvFile").files[0];
-      if (!file) return showError(new Error("请先选择扫描结果 CSV"));
-      const confirm = prompt("将按 CSV 执行，并再次核对当前 EXIF，已处理照片会跳过。请输入 ROTATE 继续：") || "";
-      if (confirm !== "ROTATE") return;
-      try {
-        const csv = await file.text();
-        await api("/api/run-csv", {
-          method: "POST",
-          body: JSON.stringify({name: file.name, csv, confirm, config: config()})
-        });
-        await refresh();
-      } catch (error) { showError(error); }
-    }
-    async function refresh() {
-      try {
-        const data = await api("/api/status");
-        const status = $("status");
-        status.className = "status-strip" + (data.running ? " running" : data.exit_code ? " failed" : "");
-        status.querySelector(".status-title").textContent = data.running ? `${data.mode === "apply" ? "正式回正" : "安全扫描"}进行中` : data.finished_at ? (data.exit_code === 0 ? "任务已完成" : "任务出现错误") : "等待任务";
-        status.querySelector(".status-meta").textContent = data.started_at ? `开始：${data.started_at}${data.finished_at ? " · 结束：" + data.finished_at : ""}` : "建议先运行安全扫描";
-        $("terminal").textContent = data.output.length ? data.output.join("\n") : "这里会显示扫描进度和最终统计。";
-        $("terminal").scrollTop = $("terminal").scrollHeight;
-        $("stopBtn").disabled = !data.running;
-        $("scanBtn").disabled = data.running;
-        $("applyBtn").disabled = true;
-        $("runCsvBtn").disabled = true;
-        const recovery = data.task_recovery || {};
-        $("restoreTaskBtn").style.display = recovery.available ? "inline-block" : "none";
-        $("restoreTaskBtn").disabled = data.running;
-        $("restoreTaskBtn").textContent = recovery.available ? `从备份恢复本次 ${recovery.count} 张照片` : "从备份恢复本次全部改动";
-        $("refreshTaskBtn").style.display = recovery.available ? "inline-block" : "none";
-        $("refreshTaskBtn").disabled = data.running;
-        $("refreshTaskBtn").textContent = recovery.available ? `校验并刷新本次 ${recovery.count} 张照片索引` : "校验原图并刷新飞牛索引";
-        $("logs").innerHTML = data.logs.length ? data.logs.map(log =>
-          `<a class="log-item" href="${log.url}"><strong>${log.name}</strong><span>${log.modified} · ${(log.size/1024).toFixed(1)} KB</span></a>`
-        ).join("") : '<span class="status-meta">暂无结果文件</span>';
-      } catch (error) { showError(error); }
-    }
-    async function browse(path) {
-      try {
-        const data = await api("/api/browse?path=" + encodeURIComponent(path));
-        browserPath = data.path;
-        $("browserPath").textContent = data.path;
-        const rows = [];
-        if (data.parent) rows.push(`<button class="dir" data-path="${data.parent}">↰ 上一级</button>`);
-        rows.push(...data.directories.map(dir => `<button class="dir" data-path="${dir.path}">▸ ${dir.name}</button>`));
-        $("directories").innerHTML = rows.join("") || '<p class="status-meta">没有子文件夹</p>';
-        $("browserDialog").showModal();
-      } catch (error) { showError(error); }
-    }
-    $("directories").addEventListener("click", event => {
-      const button = event.target.closest("[data-path]");
-      if (button) browse(button.dataset.path);
+    selections.set(item.id, {id:item.id, angle, path:item.relative_path});
+  } else {
+    selections.delete(item.id);
+  }
+  renderGallery();
+});
+async function applySelected() {
+  if (!selections.size) return;
+  const message = `将处理 ${selections.size} 张照片。只修改 EXIF Orientation，不改变像素；每张都会建立独立任务备份并校验。\\n\\n请输入 APPLY METADATA 继续：`;
+  const confirm = prompt(message) || "";
+  if (confirm !== "APPLY METADATA") return;
+  try {
+    await api("/api/apply", {
+      method:"POST",
+      body:JSON.stringify({scan:scanName, items:[...selections.values()], confirm, config:config()})
     });
-    $("browseBtn").onclick = () => browse(fields.source.value || "/storage");
-    $("chooseHere").onclick = () => { fields.source.value = browserPath; $("browserDialog").close(); };
-    $("closeBrowser").onclick = () => $("browserDialog").close();
-    $("scanBtn").onclick = () => run("scan");
-    $("applyBtn").onclick = () => run("apply");
-    $("runCsvBtn").onclick = runCsv;
-    $("restoreTaskBtn").onclick = async () => {
-      const confirm = prompt("检测到照片异常。此操作会从原图备份恢复本次任务改动的全部照片，包括 EXIF 固化和人脸旋转。请输入 RESTORE 继续：") || "";
-      if (confirm !== "RESTORE") return;
-      try {
-        await api("/api/restore-task", {method:"POST", body:JSON.stringify({confirm, config:config()})});
-        await refresh();
-      } catch (error) { showError(error); }
-    };
-    $("refreshTaskBtn").onclick = async () => {
-      const confirm = prompt("程序会先逐字节确认当前文件与原图备份完全一致，再仅更新时间触发飞牛重建缩略图；不一致的文件绝不会修改。请输入 REFRESH 继续：") || "";
-      if (confirm !== "REFRESH") return;
-      try {
-        await api("/api/refresh-task", {method:"POST", body:JSON.stringify({confirm, config:config()})});
-        await refresh();
-      } catch (error) { showError(error); }
-    };
-    $("stopBtn").onclick = async () => { await api("/api/stop", {method:"POST", body:"{}"}); refresh(); };
-    loadConfig().catch(showError);
-    refresh();
-    setInterval(refresh, 1800);
-  </script>
+    await refresh();
+  } catch (error) { showError(error); }
+}
+async function rollback() {
+  const confirm = prompt("只会恢复最近一次 2.0 任务中仍未被再次修改的照片。请输入 ROLLBACK：") || "";
+  if (confirm !== "ROLLBACK") return;
+  try {
+    await api("/api/rollback", {method:"POST", body:JSON.stringify({confirm, config:config()})});
+    await refresh();
+  } catch (error) { showError(error); }
+}
+async function refresh() {
+  try {
+    const data = await api("/api/status");
+    const status = $("status");
+    const wasRunning = lastRunning;
+    lastRunning = data.running;
+    status.className = "status" + (data.running ? " running" : data.exit_code ? " failed" : "");
+    const labels = {"scan":"只读扫描","apply-manifest":"安全写入","rollback-task":"任务回滚"};
+    status.querySelector("strong").textContent = data.running ? `${labels[data.mode] || "任务"}进行中` : data.finished_at ? (data.exit_code === 0 ? "任务已完成" : "任务出现错误") : "等待任务";
+    status.querySelector("span").textContent = data.started_at ? `开始：${data.started_at}${data.finished_at ? " · 结束："+data.finished_at : ""}` : "请先扫描一个小目录验证效果。";
+    $("terminal").textContent = data.output.length ? data.output.join("\n") : "这里会显示扫描、校验和写入进度。";
+    $("terminal").scrollTop = $("terminal").scrollHeight;
+    $("scanBtn").disabled = data.running;
+    $("stopBtn").disabled = !data.running;
+    $("rollbackBtn").hidden = !data.task?.rollback_available;
+    $("rollbackBtn").disabled = data.running;
+    $("applyBtn").disabled = data.running || selections.size === 0;
+    const newScan = data.scan?.name || "";
+    if (newScan) {
+      $("exportScan").hidden = false;
+      $("exportScan").href = `/api/export-scan?name=${encodeURIComponent(newScan)}`;
+    }
+    if (newScan && (newScan !== scanName || (wasRunning && !data.running && data.mode === "scan"))) {
+      scanName = newScan;
+      await loadCandidates(true);
+    }
+  } catch (error) { showError(error); }
+}
+async function browse(path) {
+  try {
+    const data = await api("/api/browse?path="+encodeURIComponent(path));
+    browserPath = data.path;
+    $("browserPath").textContent = data.path;
+    const rows = [];
+    if (data.parent) rows.push(`<button class="dir" data-path="${esc(data.parent)}">↑ 上一级</button>`);
+    rows.push(...data.directories.map(dir => `<button class="dir" data-path="${esc(dir.path)}">▸ ${esc(dir.name)}</button>`));
+    $("directories").innerHTML = rows.join("") || '<p class="meta">没有子文件夹</p>';
+    $("browserDialog").showModal();
+  } catch (error) { showError(error); }
+}
+$("directories").onclick = event => {
+  const button = event.target.closest("[data-path]");
+  if (button) browse(button.dataset.path);
+};
+$("browseBtn").onclick = () => browse(fields.source.value || "/storage");
+$("chooseHere").onclick = () => { fields.source.value=browserPath; $("browserDialog").close(); };
+$("closeBrowser").onclick = () => $("browserDialog").close();
+$("scanBtn").onclick = startScan;
+$("stopBtn").onclick = async () => { await api("/api/stop",{method:"POST",body:"{}"}); refresh(); };
+$("filter").onchange = () => loadCandidates(true).catch(showError);
+$("prevBtn").onclick = () => { offset=Math.max(0,offset-pageSize); loadCandidates().catch(showError); };
+$("nextBtn").onclick = () => { offset+=pageSize; loadCandidates().catch(showError); };
+$("selectPageBtn").onclick = () => {
+  currentItems.forEach(item => {
+    if (item.suggested_angle) selections.set(item.id,{id:item.id,angle:item.suggested_angle,path:item.relative_path});
+  });
+  renderGallery();
+};
+$("applyBtn").onclick = applySelected;
+$("rollbackBtn").onclick = rollback;
+loadConfig().catch(showError);
+refresh();
+setInterval(refresh,1800);
+</script>
 </body>
 </html>

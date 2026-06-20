@@ -12,7 +12,6 @@ RUN apt-get update \
        python3-opencv \
        python3-pil \
        opencv-data \
-       libjpeg-turbo-progs \
        libimage-exiftool-perl \
        ca-certificates \
     && rm -rf /var/lib/apt/lists/*
