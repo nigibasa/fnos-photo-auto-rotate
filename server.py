@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import io
+import hashlib
 import json
 import os
+import signal
 import subprocess
 import tempfile
 import threading
@@ -23,6 +25,7 @@ ROTATOR_SCRIPT = APP_DIR / "photo_auto_rotate.py"
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/data"))
 CONFIG_FILE = DATA_DIR / "config.json"
 APPROVAL_DIR = DATA_DIR / "approvals"
+SELECTION_DIR = DATA_DIR / "selections"
 ALLOWED_ROOT = Path(os.environ.get("ALLOWED_ROOT", "/storage")).resolve()
 PORT = int(os.environ.get("WEB_PORT", "8321"))
 MAX_SELECTION = 5000
@@ -33,6 +36,8 @@ DEFAULT_CONFIG = {
     "min_confidence": 1.35,
     "allow_180": False,
     "min_age_minutes": 10,
+    "cpu_workers": 2,
+    "acceleration": "auto",
 }
 
 
@@ -75,13 +80,42 @@ def write_json_atomic(path: Path, payload: dict) -> None:
         temp.unlink(missing_ok=True)
 
 
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def fast_file_fingerprint(path: Path, sample_size: int = 64 * 1024) -> str:
+    stat = path.stat()
+    digest = hashlib.sha256()
+    digest.update(f"v1:{stat.st_size}:{stat.st_mtime_ns}".encode("ascii"))
+    offsets = {0}
+    if stat.st_size > sample_size:
+        offsets.add(max(0, (stat.st_size - sample_size) // 2))
+        offsets.add(max(0, stat.st_size - sample_size))
+    with path.open("rb") as handle:
+        for offset in sorted(offsets):
+            handle.seek(offset)
+            digest.update(offset.to_bytes(8, "big"))
+            digest.update(handle.read(sample_size))
+    return digest.hexdigest()
+
+
 def save_config(data: dict) -> dict:
+    acceleration = str(data.get("acceleration", "auto"))
+    if acceleration not in {"auto", "gpu", "cpu"}:
+        acceleration = "auto"
     config = {
         "source": str(safe_source(str(data.get("source", DEFAULT_CONFIG["source"])))),
         "recursive": bool(data.get("recursive", True)),
         "min_confidence": max(1.01, min(10.0, float(data.get("min_confidence", 1.35)))),
         "allow_180": bool(data.get("allow_180", False)),
         "min_age_minutes": max(0, min(10080, int(data.get("min_age_minutes", 10)))),
+        "cpu_workers": max(1, min(4, int(data.get("cpu_workers", 2)))),
+        "acceleration": acceleration,
     }
     write_json_atomic(CONFIG_FILE, config)
     return config
@@ -102,6 +136,32 @@ def newest_json(directory: Path, kind: str) -> tuple[Path | None, dict | None]:
 
 def latest_scan() -> tuple[Path | None, dict | None]:
     return newest_json(DATA_DIR / "scans", "photo-orientation-scan")
+
+
+def latest_scan_progress() -> dict | None:
+    progress_dir = DATA_DIR / "scans" / "in-progress"
+    if not progress_dir.exists():
+        return None
+    for path in sorted(progress_dir.glob("*.json"), key=lambda item: item.stat().st_mtime_ns, reverse=True):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if data.get("kind") == "photo-orientation-scan-progress":
+            return {
+                key: data.get(key)
+                for key in (
+                    "scan_id",
+                    "source",
+                    "started_at",
+                    "updated_at",
+                    "backend",
+                    "completed",
+                    "total",
+                    "counts",
+                )
+            }
+    return None
 
 
 def latest_task() -> tuple[Path | None, dict | None]:
@@ -190,6 +250,12 @@ class Job:
                         "yes" if config["allow_180"] else "no",
                         "--min-age-minutes",
                         str(config["min_age_minutes"]),
+                        "--cpu-workers",
+                        str(config["cpu_workers"]),
+                        "--acceleration",
+                        config["acceleration"],
+                        "--checkpoint-every",
+                        "25",
                     ]
                 )
             else:
@@ -216,6 +282,7 @@ class Job:
                 encoding="utf-8",
                 errors="replace",
                 bufsize=1,
+                start_new_session=(os.name != "nt"),
             )
             threading.Thread(target=self._collect, daemon=True).start()
 
@@ -236,7 +303,10 @@ class Job:
         with self.lock:
             if self.process is None or self.process.poll() is not None:
                 return
-            self.process.terminate()
+            if os.name == "nt":
+                self.process.terminate()
+            else:
+                os.killpg(self.process.pid, signal.SIGTERM)
             self.lines.append("已请求停止任务；已完成的照片仍可按任务清单回滚。")
 
 
@@ -244,7 +314,7 @@ JOB = Job()
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "PhotoOrientation/2.0"
+    server_version = "PhotoOrientation/2.1"
 
     def log_message(self, format: str, *args) -> None:
         return
@@ -312,12 +382,21 @@ class Handler(BaseHTTPRequestHandler):
                 {
                     **JOB.status(),
                     "scan": public_scan_summary(scan_path, scan),
+                    "scan_progress": latest_scan_progress(),
                     "task": public_task_summary(task_path, task),
                 }
             )
             return
         if parsed.path == "/api/config":
             self.json_response(load_config())
+            return
+        if parsed.path == "/api/selections":
+            scan_name = Path(query.get("scan", [""])[0]).name
+            selection_path = SELECTION_DIR / f"{scan_name}.json"
+            if not scan_name or not selection_path.is_file():
+                self.json_response({"scan": scan_name, "items": []})
+                return
+            self.json_response(json.loads(selection_path.read_text(encoding="utf-8")))
             return
         if parsed.path == "/api/candidates":
             scan_name = Path(query.get("scan", [""])[0]).name
@@ -419,6 +498,30 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == "/api/config":
                 self.json_response(save_config(payload))
                 return
+            if self.path == "/api/selections":
+                scan_name = Path(str(payload.get("scan", ""))).name
+                items = payload.get("items", [])
+                if not scan_name or not isinstance(items, list) or len(items) > MAX_SELECTION:
+                    raise ValueError("人工选择保存请求无效")
+                clean_items = []
+                for item in items:
+                    angle = int(item.get("angle", 0))
+                    if angle not in {90, 180, 270}:
+                        raise ValueError("人工选择角度无效")
+                    clean_items.append({"id": str(item.get("id", "")), "angle": angle})
+                selection_path = SELECTION_DIR / f"{scan_name}.json"
+                write_json_atomic(
+                    selection_path,
+                    {
+                        "schema": 2,
+                        "kind": "photo-orientation-selections",
+                        "scan": scan_name,
+                        "updated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+                        "items": clean_items,
+                    },
+                )
+                self.json_response({"saved": len(clean_items)})
+                return
             if self.path == "/api/scan":
                 config = save_config(payload.get("config", load_config()))
                 JOB.start("scan", config)
@@ -454,11 +557,30 @@ class Handler(BaseHTTPRequestHandler):
                     angle = int(selection.get("angle", 0))
                     if angle not in {90, 180, 270}:
                         raise ValueError("只允许选择 90、180 或 270 度")
+                    target = (Path(scan["source"]) / item["relative_path"]).resolve()
+                    try:
+                        target.relative_to(Path(scan["source"]).resolve())
+                    except ValueError as exc:
+                        raise ValueError("照片路径超出扫描目录") from exc
+                    if not target.is_file():
+                        raise ValueError("待处理照片不存在")
+                    stat = target.stat()
+                    if stat.st_size != int(item.get("size", -1)) or stat.st_mtime_ns != int(item.get("mtime_ns", -1)):
+                        raise ValueError(f"照片在扫描后发生变化，请重新扫描：{item['relative_path']}")
+                    expected_fingerprint = str(item.get("scan_fingerprint", ""))
+                    if not expected_fingerprint:
+                        raise ValueError(
+                            f"Legacy scan lacks safety fingerprint; rescan required: {item['relative_path']}"
+                        )
+                    if fast_file_fingerprint(target) != expected_fingerprint:
+                        raise ValueError(
+                            f"Photo content changed after scan; rescan required: {item['relative_path']}"
+                        )
                     approved.append(
                         {
                             "id": item_id,
                             "relative_path": item["relative_path"],
-                            "file_sha256": item["file_sha256"],
+                            "file_sha256": sha256_file(target),
                             "angle": angle,
                         }
                     )
@@ -481,7 +603,7 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError("确认文字不正确")
                 task_path, task = latest_task()
                 if task_path is None or task is None:
-                    raise ValueError("没有可回滚的 2.0 任务")
+                    raise ValueError("没有可回滚的 2.x 任务")
                 config = save_config(payload.get("config", load_config()))
                 if Path(task["source"]).resolve() != Path(config["source"]).resolve():
                     raise ValueError("任务目录与当前目录不一致")
@@ -504,5 +626,5 @@ if __name__ == "__main__":
             save_config(DEFAULT_CONFIG)
         except ValueError:
             write_json_atomic(CONFIG_FILE, DEFAULT_CONFIG)
-    print(f"照片方向安全修正 2.0 Web UI: 0.0.0.0:{PORT}", flush=True)
+    print(f"照片方向安全修正 2.1 Web UI: 0.0.0.0:{PORT}", flush=True)
     ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()

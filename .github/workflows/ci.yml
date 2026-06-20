@@ -16,6 +16,25 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libimage-exiftool-perl
-          python -m pip install pillow
+          python -m pip install pillow numpy==2.2.6 opencv-python-headless==4.10.0.84
+          curl -fsSL \
+            https://raw.githubusercontent.com/opencv/opencv_zoo/47534e27c9851bb1128ccc0102f1145e27f23f98/models/face_detection_yunet/face_detection_yunet_2023mar.onnx \
+            -o /tmp/face_detection_yunet.onnx
+          echo "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4  /tmp/face_detection_yunet.onnx" | sha256sum -c -
       - name: Run safety regression tests
+        env:
+          YUNET_MODEL: /tmp/face_detection_yunet.onnx
         run: python -m unittest discover -s tests -v
+
+  docker:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: false

@@ -1,104 +1,113 @@
-# 照片方向安全修正 2.0 · fnOS 插件
+# 照片方向安全修正 2.1 · fnOS 插件
 
-用于飞牛 fnOS 的 JPEG 照片方向检查与安全修正工具。安装 `.fpk` 后从飞牛桌面打开，不需要在 PC 上运行命令。
+用于飞牛 fnOS 的 JPEG 照片方向检查与安全修正工具。2.1 针对 Intel J4125 等低功耗 NAS 加入断点续扫、双 CPU 进程和 Intel 核显自动加速。
 
-## 2.0 为什么重写
+## 2.1 新功能
 
-0.1 版本会使用 `jpegtran` 旋转照片像素。部分尺寸不是 JPEG 块边界整数倍的旧照片可能出现边缘拼接、绿色区域或缩略图异常。2.0 已彻底删除像素旋转、裁剪和重新编码路径。
+- 默认使用 2 个 CPU 工作进程并行解码和检测，适合 4 核 J4125。
+- x86 安装包将 `/dev/dri` 传入容器，并安装 Intel OpenCL 驱动。
+- 使用 OpenCV 官方 YuNet 轻量人脸模型。
+- 自动模式会分别测速 CPU 与 OpenCL；核显没有更快时自动回退 CPU。
+- GPU 模式仍由 CPU 并行读取和缩图，GPU 负责方向推理。
+- 每 25 张照片保存一次扫描状态，停止、重启或升级后可继续。
+- 人工选择保存到 `/data/selections`，刷新网页或升级后不会清空。
+- 扫描时不再读取整张原图计算 SHA-256；仅在正式执行前核对时间与大小并计算完整哈希。
+- 使用 headless OpenCV 多阶段镜像，减少不需要的图形界面依赖和安装下载量。
 
-2.0 的原则：
+## 不变的安全原则
 
 - 扫描过程完全只读。
-- 人脸检测只提供方向建议，绝不自动修改照片。
+- 方向识别只提供建议，绝不自动修改照片。
 - EXIF Orientation 已经不是 1 的照片保持不动。
-- 必须在网页缩略图中人工选择方向并勾选照片。
-- 正式执行只修改 JPEG 的 EXIF Orientation 元数据。
+- 必须在网页缩略图中人工选择方向并勾选。
+- 正式执行只修改 JPEG 的 EXIF Orientation。
 - 原始压缩图像不旋转、不裁剪、不重新压缩。
 
-## 安全写入流程
+正式执行前会再次检查照片大小和纳秒修改时间；若照片自扫描后发生变化，会要求重新扫描。随后计算完整 SHA-256、建立本次任务的独立备份、在临时文件中写入 EXIF，并逐像素比较写入前后结果。只有像素、尺寸和颜色模式完全一致时才原子替换原文件。
 
-每一张经过确认的照片都会依次执行：
+## 加速模式
 
-1. 对比扫描时记录的完整文件 SHA-256；照片有变化就拒绝处理。
-2. 建立本次任务专用的不可覆盖原图备份。
-3. 将照片复制到原目录中的临时文件。
-4. 使用 ExifTool 只写入 EXIF Orientation。
-5. 完整解码写入前后的照片，比较尺寸、颜色模式及全部像素 SHA-256。
-6. 只有像素完全一致、Orientation 正确时才原子替换原文件。
-7. 替换后再次解码校验；失败会立即自动恢复备份。
-8. 每处理一张就更新任务清单；任务中断后仍可恢复。
+### 自动（推荐）
 
-最近一次 2.0 任务可以一键回滚。若照片在任务后又被其他程序修改，回滚会拒绝覆盖它。
+启动扫描时对 CPU 与 Intel OpenCL 做小型基准测试。只有核显实际更快才使用 GPU，否则使用多进程 CPU。
+
+### 优先核显
+
+只要 `/dev/dri` 和 OpenCL 可用就使用核显；初始化失败仍会回退 CPU。
+
+### 只用 CPU
+
+禁用 OpenCL，使用设定数量的 CPU 工作进程。J4125 推荐 2，设置为 4 可能影响飞牛其他服务。
+
+ARM 安装包不会挂载 `/dev/dri`，默认使用 CPU。
+
+## 断点与升级
+
+数据目录仍为：
+
+```text
+/vol1/docker/fnos-photo-auto-rotate -> /data
+```
+
+其中：
+
+- `/data/scans/in-progress`：正在扫描的断点；
+- `/data/scans`：已完成扫描；
+- `/data/selections`：人工勾选；
+- `/data/approvals`：正式执行审批清单；
+- `/data/tasks`：每次写入任务和独立备份；
+- `/data/backups`：保留的 0.1 旧版恢复文件。
+
+直接升级插件不会清理这些目录。2.1 扫描被安装、重启或手动停止后，再次使用相同目录和相同设置扫描即可继续。
+
+注意：2.0 本身没有中途断点功能，因此从 2.0 升级时只能保留已经完成的扫描，无法恢复尚未完成的 2.0 扫描进度。
 
 ## 支持范围
 
-- 正式写入：JPG、JPEG。
-- PNG、WEBP、HEIC、视频等格式不会修改。
-- Orientation 2–8 的 JPEG 视为已由 EXIF 管理，2.0 不处理。
-- 只支持人工选择的顺时针 90°、180°、270°。
+- 正式写入：JPG、JPEG；
+- PNG、WEBP、HEIC、视频等不会修改；
+- Orientation 2–8 的 JPEG 不处理；
+- 支持人工选择顺时针 90°、180°、270°。
 
 ## 安装
 
-1. 从 GitHub Releases 下载设备对应的安装包：
+1. 从 GitHub Releases 下载对应安装包：
    - Intel/AMD：`PhotoAutoRotate_x86.fpk`
    - ARM：`PhotoAutoRotate_arm.fpk`
-2. 打开飞牛「应用中心」→「本地安装」。
-3. 上传 `.fpk` 并安装。
-4. 从飞牛桌面打开「照片方向安全修正」。
-5. 先选择一个很小的测试目录运行只读扫描。
-6. 在网页查看旋转预览，选择角度并勾选确认。
-7. 输入 `APPLY METADATA` 后执行。
+2. 飞牛「应用中心」→「本地安装」。
+3. 上传 `.fpk` 并安装或升级。
+4. 从桌面打开「照片方向安全修正」。
+5. 建议先选择小目录验证。
 
 默认挂载：
 
 ```text
-/vol1                                -> /storage/vol1
-/vol2                                -> /storage/vol2
-/vol1/docker/fnos-photo-auto-rotate -> /data
+/vol1 -> /storage/vol1
+/vol2 -> /storage/vol2
 ```
 
-网页可直接填写 `/vol2/1000/photos/Moments`，程序会转换为 `/storage/vol2/1000/photos/Moments`。
+网页可直接填写 `/vol2/1000/photos/Moments`。
 
-## 从 0.1.6 升级
-
-- 可以直接在应用中心升级安装 2.0.0。
-- 旧版 `/data/backups` 不会被删除或覆盖。
-- 2.0 的扫描保存在 `/data/scans`。
-- 2.0 的审批清单保存在 `/data/approvals`。
-- 2.0 的每次任务及独立备份保存在 `/data/tasks/<任务编号>`。
-- 0.1 版本的 CSV 不可导入 2.0，避免把旧版错误判断重新执行。
-
-## 从源码验证
-
-容器镜像包含 `python3-pil`、`python3-opencv` 和 `libimage-exiftool-perl`。不再安装或调用 `jpegtran`。
+## 构建与测试
 
 ```sh
 python -m unittest discover -s tests -v
 
 python build_fpk.py \
-  --image ghcr.io/你的用户名/fnos-photo-auto-rotate:2.0.0 \
+  --image ghcr.io/你的用户名/fnos-photo-auto-rotate:2.1.0 \
   --platform x86
 
 python verify_fpk.py dist/PhotoAutoRotate_x86.fpk
 ```
 
-测试覆盖：
-
-- 101×77 非 JPEG 块整数倍尺寸照片；
-- 真实 ExifTool 元数据写入；
-- 写入前后全部解码像素哈希一致；
-- 扫描后照片被修改时拒绝执行；
-- 写入工具改变像素时拒绝替换；
-- 正常任务回滚；
-- 任务中断后的待处理项目回滚；
-- HTTP 候选预览与审批清单验证；
-- 构建并检查 fnOS FPK。
+CI 会运行安全回归测试、真实 YuNet 模型测试，并构建 amd64/arm64 两种容器镜像。
 
 ## 第三方组件
 
-- [ExifTool](https://exiftool.org/)：只修改 EXIF Orientation。
-- [Pillow](https://python-pillow.org/)：解码校验和缩略图。
-- [OpenCV](https://opencv.org/)：只生成非强制的人脸方向建议。
+- [ExifTool](https://exiftool.org/)：只修改 EXIF Orientation；
+- [Pillow](https://python-pillow.org/)：像素校验和缩略图；
+- [OpenCV](https://opencv.org/)：YuNet 推理和 OpenCL 后端；
+- [YuNet](https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet)：MIT 许可证，许可证副本位于 `third_party/yunet-LICENSE`。
 
 本项目为社区第三方应用，并非飞牛官方产品。
 

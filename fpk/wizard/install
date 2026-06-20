@@ -1,10 +1,10 @@
 [
   {
-    "stepTitle": "照片方向安全修正 2.0",
+    "stepTitle": "照片方向安全修正 2.1",
     "items": [
       {
         "type": "tips",
-        "helpText": "应用会把 /vol1、/vol2 分别挂载到容器内的 /storage/vol1、/storage/vol2。请先对小目录执行只读扫描，在网页逐张确认方向。2.0 只修改 JPEG 的 EXIF 显示方向，不会旋转或重新压缩照片像素。"
+        "helpText": "2.1 支持双 CPU 进程、Intel 核显自动测速和断点续扫。应用仍只修改 JPEG 的 EXIF 显示方向，不会旋转或重新压缩照片像素。"
       }
     ]
   }

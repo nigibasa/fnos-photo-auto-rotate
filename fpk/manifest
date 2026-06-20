@@ -1,7 +1,7 @@
 appname               = fnos-photo-auto-rotate
-version               = 2.0.0
+version               = 2.1.0
 display_name          = 照片方向安全修正
-desc                  = 人工确认后仅修改 JPEG 的 EXIF 显示方向，不旋转、不裁剪、不重新压缩照片像素
+desc                  = 支持断点续扫、双 CPU 进程和 Intel 核显自动加速；写入仍只修改 EXIF
 platform              = x86
 maintainer            = Community
 maintainer_url        = https://github.com
@@ -15,4 +15,4 @@ service_port          = 8321
 checkport             = false
 source                = thirdparty
 checksum              =
-fpk_version           = 2.0.0-r1
+fpk_version           = 2.1.0-r1

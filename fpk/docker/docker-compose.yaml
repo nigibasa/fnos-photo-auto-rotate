@@ -8,6 +8,7 @@ services:
       DATA_DIR: /data
     ports:
       - "8321:8321"
+__GPU_DEVICES__
     volumes:
       - /vol1:/storage/vol1
       - /vol2:/storage/vol2

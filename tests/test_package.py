@@ -5,6 +5,7 @@ import sys
 import tarfile
 import tempfile
 import unittest
+import io
 from pathlib import Path
 
 
@@ -18,24 +19,32 @@ class PackageTests(unittest.TestCase):
 
     def test_build_and_verify_fpk(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
-            output = Path(temp) / "PhotoAutoRotate.fpk"
-            subprocess.run(
-                [
-                    sys.executable,
-                    str(ROOT / "build_fpk.py"),
-                    "--image",
-                    "ghcr.io/example/fnos-photo-auto-rotate:2.0.0",
-                    "--platform",
-                    "x86",
-                    "--output",
-                    str(output),
-                ],
-                check=True,
-            )
-            subprocess.run([sys.executable, str(ROOT / "verify_fpk.py"), str(output)], check=True)
-            with tarfile.open(output, "r:gz") as package:
-                main = package.getmember("cmd/main")
-                self.assertEqual(main.mode & 0o111, 0o111)
+            for platform in ("x86", "arm"):
+                output = Path(temp) / f"PhotoAutoRotate_{platform}.fpk"
+                subprocess.run(
+                    [
+                        sys.executable,
+                        str(ROOT / "build_fpk.py"),
+                        "--image",
+                        "ghcr.io/example/fnos-photo-auto-rotate:2.1.0",
+                        "--platform",
+                        platform,
+                        "--output",
+                        str(output),
+                    ],
+                    check=True,
+                )
+                subprocess.run([sys.executable, str(ROOT / "verify_fpk.py"), str(output)], check=True)
+                with tarfile.open(output, "r:gz") as package:
+                    main = package.getmember("cmd/main")
+                    self.assertEqual(main.mode & 0o111, 0o111)
+                    app_bytes = package.extractfile("app.tgz").read()
+                with tarfile.open(fileobj=io.BytesIO(app_bytes), mode="r:gz") as app:
+                    compose = app.extractfile("docker/docker-compose.yaml").read().decode("utf-8")
+                if platform == "x86":
+                    self.assertIn("/dev/dri:/dev/dri", compose)
+                else:
+                    self.assertNotIn("/dev/dri:/dev/dri", compose)
 
     def test_release_workflow_exists(self) -> None:
         workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
@@ -58,6 +67,13 @@ class PackageTests(unittest.TestCase):
         self.assertIn("APPLY METADATA", server)
         self.assertIn("只有勾选的照片才会写入 EXIF", web)
         self.assertIn("不旋转、不裁剪、不重新压缩照片像素", web)
+        self.assertIn("ProcessPoolExecutor", rotator)
+        self.assertIn("FaceDetectorYN", rotator)
+        self.assertIn("photo-orientation-scan-progress", rotator)
+        self.assertIn("/api/selections", server)
+        dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+        self.assertIn("opencv-python-headless==4.10.0.84", dockerfile)
+        self.assertNotIn("python3-opencv", dockerfile)
 
 
 if __name__ == "__main__":

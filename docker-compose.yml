@@ -8,6 +8,8 @@ services:
     environment:
       WEB_PORT: "8321"
       DATA_DIR: /data
+    devices:
+      - /dev/dri:/dev/dri
     volumes:
       - /vol1:/storage/vol1
       - /vol2:/storage/vol2

@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>照片方向安全修正 2.0</title>
+  <title>照片方向安全修正 2.1</title>
   <style>
     :root {
       --ink:#17201c; --paper:#f3f0e7; --card:#fffdf8; --line:#c9c2b2;
@@ -80,7 +80,7 @@
   <header>
     <div>
       <div class="eyebrow">FNOS · METADATA-ONLY ORIENTATION</div>
-      <h1>照片方向安全修正 2.0</h1>
+      <h1>照片方向安全修正 2.1</h1>
       <p class="lede">扫描只读；程序只给方向建议。你在缩略图中确认后，插件仅修改 JPEG 的 EXIF 显示方向，不旋转、不裁剪、不重新压缩照片像素。</p>
     </div>
     <div class="safety">写入前备份，写入后逐像素比对。任何变化或不一致都会拒绝替换原图。</div>
@@ -99,6 +99,14 @@
         <label><input id="recursive" type="checkbox" checked>扫描子文件夹</label>
         <label><input id="allow180" type="checkbox">提供 180° 建议</label>
       </div>
+      <label for="acceleration">扫描加速</label>
+      <select id="acceleration">
+        <option value="auto">自动：UHD 600 可用时使用核显</option>
+        <option value="gpu">优先使用 Intel 核显，失败则回退</option>
+        <option value="cpu">只使用 CPU</option>
+      </select>
+      <label for="workers">CPU 工作进程（J4125 推荐 2）</label>
+      <input id="workers" type="number" min="1" max="4" value="2">
       <label for="confidence">建议阈值（越大越谨慎）</label>
       <input id="confidence" type="number" min="1.01" max="10" step=".05" value="1.35">
       <label for="age">跳过最近修改的照片（分钟）</label>
@@ -118,7 +126,7 @@
       </div>
       <pre id="terminal">这里会显示扫描、校验和写入进度。</pre>
       <div class="actions">
-        <button class="danger" id="rollbackBtn" hidden>回滚最近一次 2.0 任务</button>
+        <button class="danger" id="rollbackBtn" hidden>回滚最近一次 2.x 任务</button>
         <a id="exportScan" hidden><button>下载扫描清单</button></a>
       </div>
     </article>
@@ -162,7 +170,8 @@
 const $ = id => document.getElementById(id);
 const fields = {
   source:$("source"), recursive:$("recursive"), allow180:$("allow180"),
-  confidence:$("confidence"), age:$("age")
+  confidence:$("confidence"), age:$("age"),
+  acceleration:$("acceleration"), workers:$("workers")
 };
 const pageSize = 40;
 let browserPath = "/storage";
@@ -171,6 +180,7 @@ let currentItems = [];
 let offset = 0;
 let total = 0;
 let lastRunning = false;
+let saveSelectionsTimer = null;
 const selections = new Map();
 
 function esc(value) {
@@ -180,7 +190,8 @@ function config() {
   return {
     source:fields.source.value.trim(), recursive:fields.recursive.checked,
     allow_180:fields.allow180.checked, min_confidence:Number(fields.confidence.value),
-    min_age_minutes:Number(fields.age.value)
+    min_age_minutes:Number(fields.age.value),
+    acceleration:fields.acceleration.value, cpu_workers:Number(fields.workers.value)
   };
 }
 async function api(path, options={}) {
@@ -199,6 +210,26 @@ async function loadConfig() {
   fields.allow180.checked = data.allow_180;
   fields.confidence.value = data.min_confidence;
   fields.age.value = data.min_age_minutes;
+  fields.acceleration.value = data.acceleration || "auto";
+  fields.workers.value = data.cpu_workers || 2;
+}
+async function restoreSelections() {
+  selections.clear();
+  if (!scanName) return;
+  const data = await api(`/api/selections?scan=${encodeURIComponent(scanName)}`);
+  (data.items || []).forEach(item => selections.set(item.id, {id:item.id, angle:item.angle}));
+}
+function scheduleSelectionSave() {
+  clearTimeout(saveSelectionsTimer);
+  saveSelectionsTimer = setTimeout(async () => {
+    if (!scanName) return;
+    try {
+      await api("/api/selections", {
+        method:"POST",
+        body:JSON.stringify({scan:scanName,items:[...selections.values()]})
+      });
+    } catch (error) { showError(error); }
+  }, 350);
 }
 async function startScan() {
   $("notice").textContent = "";
@@ -254,6 +285,7 @@ function chooseAngle(itemId, angle, forceSelect=true) {
   const item = currentItems.find(entry => entry.id === itemId);
   if (!item) return;
   if (forceSelect) selections.set(itemId, {id:itemId, angle, path:item.relative_path});
+  scheduleSelectionSave();
   renderGallery();
 }
 $("gallery").addEventListener("click", event => {
@@ -276,6 +308,7 @@ $("gallery").addEventListener("change", event => {
   } else {
     selections.delete(item.id);
   }
+  scheduleSelectionSave();
   renderGallery();
 });
 async function applySelected() {
@@ -292,7 +325,7 @@ async function applySelected() {
   } catch (error) { showError(error); }
 }
 async function rollback() {
-  const confirm = prompt("只会恢复最近一次 2.0 任务中仍未被再次修改的照片。请输入 ROLLBACK：") || "";
+  const confirm = prompt("只会恢复最近一次 2.x 任务中仍未被再次修改的照片。请输入 ROLLBACK：") || "";
   if (confirm !== "ROLLBACK") return;
   try {
     await api("/api/rollback", {method:"POST", body:JSON.stringify({confirm, config:config()})});
@@ -317,12 +350,21 @@ async function refresh() {
     $("rollbackBtn").disabled = data.running;
     $("applyBtn").disabled = data.running || selections.size === 0;
     const newScan = data.scan?.name || "";
+    const progress = data.scan_progress;
+    if (progress && data.running && data.mode === "scan") {
+      status.querySelector("span").textContent =
+        `已处理 ${progress.completed || 0}/${progress.total || "?"} · ${progress.backend === "opencl" ? "Intel 核显 + CPU" : "CPU 多进程"} · 每 25 张保存断点`;
+    } else if (progress && !data.running) {
+      status.querySelector("span").textContent =
+        `保存有扫描断点：${progress.completed || 0}/${progress.total || "?"}。再次扫描相同目录和设置会继续。`;
+    }
     if (newScan) {
       $("exportScan").hidden = false;
       $("exportScan").href = `/api/export-scan?name=${encodeURIComponent(newScan)}`;
     }
     if (newScan && (newScan !== scanName || (wasRunning && !data.running && data.mode === "scan"))) {
       scanName = newScan;
+      await restoreSelections();
       await loadCandidates(true);
     }
   } catch (error) { showError(error); }
@@ -355,6 +397,7 @@ $("selectPageBtn").onclick = () => {
   currentItems.forEach(item => {
     if (item.suggested_angle) selections.set(item.id,{id:item.id,angle:item.suggested_angle,path:item.relative_path});
   });
+  scheduleSelectionSave();
   renderGallery();
 };
 $("applyBtn").onclick = applySelected;

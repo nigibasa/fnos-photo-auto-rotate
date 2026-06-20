@@ -39,11 +39,15 @@ def add_path(archive: tarfile.TarFile, path: Path, arcname: str) -> None:
             add_path(archive, child, f"{arcname}/{child.name}")
 
 
-def create_app_payload(destination: Path, image: str) -> None:
+def create_app_payload(destination: Path, image: str, platform: str) -> None:
     compose = (FPK / "docker" / "docker-compose.yaml").read_text(encoding="utf-8")
     if "__IMAGE__" not in compose:
         raise SystemExit("fpk/docker/docker-compose.yaml 缺少 __IMAGE__ 占位符")
     compose = compose.replace("__IMAGE__", image)
+    if "__GPU_DEVICES__" not in compose:
+        raise SystemExit("fpk/docker/docker-compose.yaml 缺少 __GPU_DEVICES__ 占位符")
+    gpu_devices = "    devices:\n      - /dev/dri:/dev/dri" if platform == "x86" else ""
+    compose = compose.replace("__GPU_DEVICES__", gpu_devices)
 
     with tarfile.open(destination, "w:gz", format=tarfile.PAX_FORMAT) as archive:
         data = compose.encode("utf-8")
@@ -69,7 +73,7 @@ def patched_manifest(checksum: str, platform: str) -> bytes:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="构建 fnOS FPK")
-    parser.add_argument("--image", required=True, help="预构建容器镜像，例如 ghcr.io/owner/repo:2.0.0")
+    parser.add_argument("--image", required=True, help="预构建容器镜像，例如 ghcr.io/owner/repo:2.1.0")
     parser.add_argument("--platform", choices=["x86", "arm"], default="x86")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
@@ -96,7 +100,7 @@ def main() -> int:
 
     with tempfile.TemporaryDirectory(prefix="photo-auto-rotate-") as temp_dir:
         app_tgz = Path(temp_dir) / "app.tgz"
-        create_app_payload(app_tgz, args.image)
+        create_app_payload(app_tgz, args.image, args.platform)
         checksum = hashlib.md5(app_tgz.read_bytes()).hexdigest()
 
         with tarfile.open(args.output, "w:gz", format=tarfile.PAX_FORMAT) as archive:

@@ -229,6 +229,7 @@ class SafeOrientationTests(unittest.TestCase):
             photo = photos / "candidate.jpg"
             create_jpeg(photo)
             file_hash = rotator.sha256_file(photo)
+            photo_stat = photo.stat()
             item_id = rotator.candidate_id(photo.name, file_hash)
             scan_name = "photo-orientation-scan-test.json"
             scan = {
@@ -248,7 +249,10 @@ class SafeOrientationTests(unittest.TestCase):
                         "suggested_angle": 90,
                         "confidence": 2.0,
                         "reason": "人工确认测试",
-                        "file_sha256": file_hash,
+                        "file_sha256": "",
+                        "size": photo_stat.st_size,
+                        "mtime_ns": photo_stat.st_mtime_ns,
+                        "scan_fingerprint": rotator.fast_file_fingerprint(photo),
                     }
                 ],
             }
@@ -258,11 +262,13 @@ class SafeOrientationTests(unittest.TestCase):
                 webserver.DATA_DIR,
                 webserver.CONFIG_FILE,
                 webserver.APPROVAL_DIR,
+                webserver.SELECTION_DIR,
                 webserver.ALLOWED_ROOT,
             )
             webserver.DATA_DIR = data
             webserver.CONFIG_FILE = data / "config.json"
             webserver.APPROVAL_DIR = data / "approvals"
+            webserver.SELECTION_DIR = data / "selections"
             webserver.ALLOWED_ROOT = root.resolve()
             httpd = ThreadingHTTPServer(("127.0.0.1", 0), webserver.Handler)
             thread = threading.Thread(target=httpd.serve_forever, daemon=True)
@@ -310,6 +316,36 @@ class SafeOrientationTests(unittest.TestCase):
                 approval = json.loads(approvals[0].read_text(encoding="utf-8"))
                 self.assertEqual(approval["items"][0]["relative_path"], photo.name)
                 self.assertEqual(approval["items"][0]["file_sha256"], file_hash)
+
+                original_stat = photo.stat()
+                original_bytes = photo.read_bytes()
+                changed = bytearray(original_bytes)
+                changed[len(changed) // 2] ^= 1
+                photo.write_bytes(changed)
+                os.utime(photo, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
+                with self.assertRaises(urllib.error.HTTPError) as error:
+                    urllib.request.urlopen(request)
+                self.assertEqual(error.exception.code, 400)
+                photo.write_bytes(original_bytes)
+                os.utime(photo, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
+
+                selection_payload = {
+                    "scan": scan_name,
+                    "items": [{"id": item_id, "angle": 90}],
+                }
+                selection_request = urllib.request.Request(
+                    f"{base}/api/selections",
+                    method="POST",
+                    data=json.dumps(selection_payload).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                )
+                with urllib.request.urlopen(selection_request) as response:
+                    self.assertEqual(response.status, 200)
+                with urllib.request.urlopen(
+                    f"{base}/api/selections?scan={scan_name}"
+                ) as response:
+                    saved_selections = json.loads(response.read().decode("utf-8"))
+                self.assertEqual(saved_selections["items"], [{"id": item_id, "angle": 90}])
             finally:
                 httpd.shutdown()
                 httpd.server_close()
@@ -318,6 +354,7 @@ class SafeOrientationTests(unittest.TestCase):
                     webserver.DATA_DIR,
                     webserver.CONFIG_FILE,
                     webserver.APPROVAL_DIR,
+                    webserver.SELECTION_DIR,
                     webserver.ALLOWED_ROOT,
                 ) = original_globals
 
