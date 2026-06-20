@@ -148,6 +148,7 @@
         <pre id="terminal">这里会显示扫描进度和最终统计。</pre>
         <button id="stopBtn" style="margin-top:10px" disabled>停止当前任务</button>
         <button id="restoreTaskBtn" class="danger" style="margin-top:10px;display:none">从备份恢复本次全部改动</button>
+        <button id="refreshTaskBtn" style="margin-top:10px;display:none">校验原图并刷新飞牛索引</button>
       </article>
 
       <article class="card logs">
@@ -245,6 +246,9 @@
         $("restoreTaskBtn").style.display = recovery.available ? "inline-block" : "none";
         $("restoreTaskBtn").disabled = data.running;
         $("restoreTaskBtn").textContent = recovery.available ? `从备份恢复本次 ${recovery.count} 张照片` : "从备份恢复本次全部改动";
+        $("refreshTaskBtn").style.display = recovery.available ? "inline-block" : "none";
+        $("refreshTaskBtn").disabled = data.running;
+        $("refreshTaskBtn").textContent = recovery.available ? `校验并刷新本次 ${recovery.count} 张照片索引` : "校验原图并刷新飞牛索引";
         $("logs").innerHTML = data.logs.length ? data.logs.map(log =>
           `<a class="log-item" href="${log.url}"><strong>${log.name}</strong><span>${log.modified} · ${(log.size/1024).toFixed(1)} KB</span></a>`
         ).join("") : '<span class="status-meta">暂无结果文件</span>';
@@ -277,6 +281,14 @@
       if (confirm !== "RESTORE") return;
       try {
         await api("/api/restore-task", {method:"POST", body:JSON.stringify({confirm, config:config()})});
+        await refresh();
+      } catch (error) { showError(error); }
+    };
+    $("refreshTaskBtn").onclick = async () => {
+      const confirm = prompt("程序会先逐字节确认当前文件与原图备份完全一致，再仅更新时间触发飞牛重建缩略图；不一致的文件绝不会修改。请输入 REFRESH 继续：") || "";
+      if (confirm !== "REFRESH") return;
+      try {
+        await api("/api/refresh-task", {method:"POST", body:JSON.stringify({confirm, config:config()})});
         await refresh();
       } catch (error) { showError(error); }
     };

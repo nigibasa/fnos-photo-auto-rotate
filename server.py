@@ -102,10 +102,11 @@ class Job:
             if self.process is not None and self.process.poll() is None:
                 raise RuntimeError("已有任务正在运行")
             command = ["python3", str(ROTATOR_SCRIPT), "--source", config["source"], "--work", str(DATA_DIR)]
-            if mode == "restore-task":
+            if mode in {"restore-task", "refresh-task"}:
                 if input_csv is None:
                     raise RuntimeError("缺少恢复清单")
-                command.extend(["--restore-task-csv", str(input_csv)])
+                flag = "--restore-task-csv" if mode == "restore-task" else "--refresh-task-csv"
+                command.extend([flag, str(input_csv)])
             else:
                 command.extend(
                     [
@@ -123,10 +124,11 @@ class Job:
                         "yes" if config["backup"] else "no",
                     ]
                 )
-            if input_csv is not None and mode != "restore-task":
+            if input_csv is not None and mode not in {"restore-task", "refresh-task"}:
                 command.extend(["--input-csv", str(input_csv)])
             self.lines.clear()
-            task_label = "恢复本次任务原图" if mode == "restore-task" else ("CSV 导入执行" if input_csv else mode)
+            labels = {"restore-task": "恢复本次任务原图", "refresh-task": "校验原图并刷新飞牛索引"}
+            task_label = labels.get(mode, "CSV 导入执行" if input_csv else mode)
             self.lines.append(f"启动 {task_label} 任务：{config['source']}")
             self.mode = mode
             self.started_at = datetime.now().astimezone().isoformat(timespec="seconds")
@@ -337,6 +339,16 @@ class Handler(BaseHTTPRequestHandler):
                 if recovery_log is None or recovery_count == 0:
                     raise ValueError("没有找到可恢复的任务记录")
                 JOB.start("restore-task", config, input_csv=recovery_log)
+                self.json_response(JOB.status(), HTTPStatus.ACCEPTED)
+                return
+            if self.path == "/api/refresh-task":
+                if payload.get("confirm") != "REFRESH":
+                    raise ValueError("索引刷新需要输入 REFRESH 确认")
+                config = save_config(payload.get("config", load_config()))
+                recovery_log, recovery_count = latest_changed_task_log()
+                if recovery_log is None or recovery_count == 0:
+                    raise ValueError("没有找到可刷新的任务记录")
+                JOB.start("refresh-task", config, input_csv=recovery_log)
                 self.json_response(JOB.status(), HTTPStatus.ACCEPTED)
                 return
             if self.path == "/api/stop":

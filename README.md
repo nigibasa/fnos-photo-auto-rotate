@@ -4,7 +4,7 @@
 
 > 这是社区第三方应用，并非飞牛官方产品。正式处理大量照片前，请先对小目录运行安全扫描并保留备份。
 
-> v0.1.5 是紧急恢复版本：因部分 JPEG 处理后出现绿色或损坏，正式处理和 CSV 执行暂时禁用，仅保留安全扫描与从备份恢复功能。
+> v0.1.6 是紧急恢复版本：因部分 JPEG 处理后出现绿色、拼接边或损坏，正式处理和 CSV 执行暂时禁用，仅保留安全扫描、原图恢复和安全索引刷新。
 
 ## 功能
 
@@ -18,6 +18,7 @@
 - 自带目录浏览、实时进度、任务停止和 CSV 下载。
 - 可导入已有扫描 CSV 直接执行，无需再次进行完整人脸扫描；执行前会复核当前 EXIF，防止重复旋转。
 - 若处理后照片异常，可按最新任务清单从原图备份中一键恢复本次全部改动。
+- 恢复后可逐字节校验当前文件与备份，只有完全一致时才更新时间以触发飞牛重新生成缩略图。
 
 ## 安装
 
@@ -65,7 +66,7 @@ docker build -t fnos-photo-auto-rotate:dev .
 
 ```sh
 python build_fpk.py \
-  --image ghcr.io/你的用户名/fnos-photo-auto-rotate:0.1.5 \
+  --image ghcr.io/你的用户名/fnos-photo-auto-rotate:0.1.6 \
   --platform x86
 ```
 
@@ -79,7 +80,7 @@ python -m unittest discover -s tests -v
 ## GitHub 自动发布
 
 - 推送到 `main`：自动构建 amd64/arm64 GHCR 镜像和 FPK artifact。
-- 推送版本标签（例如 `v0.1.5`）：额外创建 GitHub Release，并附带 x86、ARM 两个可安装的 FPK。
+- 推送版本标签（例如 `v0.1.6`）：额外创建 GitHub Release，并附带 x86、ARM 两个可安装的 FPK。
 - GHCR 镜像需要设为 Public，飞牛才能匿名拉取。
 
 ## 处理后飞牛仍显示旧方向

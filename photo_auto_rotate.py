@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import filecmp
 import os
 import shutil
 import subprocess
@@ -330,6 +331,46 @@ def restore_task_changes(csv_path: Path, source: Path, work: Path) -> int:
     return 0 if missing == 0 and failed == 0 else 1
 
 
+def refresh_restored_task(csv_path: Path, source: Path, work: Path) -> int:
+    backup_root = work / "backups"
+    refreshed = 0
+    mismatch = 0
+    missing = 0
+    seen: set[str] = set()
+
+    with csv_path.open("r", newline="", encoding="utf-8-sig") as csv_file:
+        reader = csv.DictReader(csv_file)
+        required = {"状态", "相对路径"}
+        if not reader.fieldnames or not required.issubset(reader.fieldnames):
+            raise ValueError("刷新清单格式不兼容")
+
+        for row in reader:
+            if (row.get("状态") or "").strip() not in {"rotated-face", "normalized-exif"}:
+                continue
+            relative = (row.get("相对路径") or "").strip()
+            if relative in seen:
+                continue
+            seen.add(relative)
+            target = safe_csv_path(source, relative)
+            backup = safe_csv_path(backup_root, relative)
+            if not target.is_file() or not backup.is_file():
+                missing += 1
+                print(f"[refresh-missing] {relative}")
+                continue
+            if not filecmp.cmp(target, backup, shallow=False):
+                mismatch += 1
+                print(f"[refresh-refused] 当前文件与原图备份不一致：{relative}")
+                continue
+            os.utime(target, None)
+            refreshed += 1
+            print(f"[index-refresh ] {relative}")
+
+    print("")
+    print(f"已触发飞牛重新索引：{refreshed} 张")
+    print(f"文件与备份不一致，拒绝刷新：{mismatch} 张；缺失：{missing} 张")
+    return 0 if mismatch == 0 and missing == 0 else 1
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--source", type=Path, required=True)
@@ -343,6 +384,7 @@ def main() -> int:
     parser.add_argument("--apply-face-suggestions", default="no")
     parser.add_argument("--input-csv", type=Path)
     parser.add_argument("--restore-task-csv", type=Path)
+    parser.add_argument("--refresh-task-csv", type=Path)
     args = parser.parse_args()
 
     source = args.source.resolve()
@@ -355,6 +397,8 @@ def main() -> int:
 
     if args.restore_task_csv:
         return restore_task_changes(args.restore_task_csv.resolve(), source, work)
+    if args.refresh_task_csv:
+        return refresh_restored_task(args.refresh_task_csv.resolve(), source, work)
 
     cascade_candidates = []
     cv2_data = getattr(cv2, "data", None)
