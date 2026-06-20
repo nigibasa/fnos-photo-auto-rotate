@@ -69,7 +69,7 @@ def patched_manifest(checksum: str, platform: str) -> bytes:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="构建 fnOS FPK")
-    parser.add_argument("--image", required=True, help="预构建容器镜像，例如 ghcr.io/owner/repo:0.1.0")
+    parser.add_argument("--image", required=True, help="预构建容器镜像，例如 ghcr.io/owner/repo:2.0.0")
     parser.add_argument("--platform", choices=["x86", "arm"], default="x86")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()

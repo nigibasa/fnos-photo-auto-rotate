@@ -1,30 +1,36 @@
 #!/usr/bin/env python3
-"""在 NAS 中批量识别并纠正照片方向。
+"""fnOS Photo Orientation 2.0.
 
-优先依据 EXIF Orientation 做确定性修正；没有有效方向标记时，
-比较人脸在 0/90/180/270 度下的检测分数，只处理高置信度结果。
+The program never rotates or re-encodes image pixels. Scans are read-only.
+An approved JPEG is corrected by writing only EXIF Orientation to a staged
+copy, verifying that decoded pixels are byte-for-byte identical, and then
+atomically replacing the original.
 """
 
 from __future__ import annotations
 
 import argparse
-import csv
-import filecmp
+import hashlib
+import json
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
 import time
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Iterator
 
-import cv2
-from PIL import Image, ImageOps
+from PIL import Image
+
+try:
+    import cv2
+except ImportError:  # Unit tests can exercise the write path without OpenCV.
+    cv2 = None
 
 
-SUPPORTED = {".jpg", ".jpeg", ".png", ".webp"}
 JPEG = {".jpg", ".jpeg"}
 SKIP_DIR_NAMES = {
     ".stfolder",
@@ -35,41 +41,72 @@ SKIP_DIR_NAMES = {
     "__MACOSX",
     "fnos-photo-auto-rotate",
 }
+ANGLE_TO_ORIENTATION = {90: 6, 180: 3, 270: 8}
+ORIENTATION_TO_ANGLE = {1: 0, 3: 180, 6: 90, 8: 270}
+SCHEMA_VERSION = 2
 
 
 def yes(value: str) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "y", "on", "是"}
 
 
-@dataclass
-class Decision:
-    action: str
-    transform: str = ""
-    reason: str = ""
-    confidence: float = 0.0
-    scores: str = ""
+def utc_now() -> str:
+    return datetime.now().astimezone().isoformat(timespec="seconds")
 
 
-def read_exif_orientation(path: Path) -> int:
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def decoded_pixel_fingerprint(path: Path) -> tuple[str, tuple[int, int], str]:
+    """Hash decoded raster bytes, independent of EXIF metadata."""
+    with Image.open(path) as image:
+        image.load()
+        digest = hashlib.sha256()
+        digest.update(image.mode.encode("ascii", errors="replace"))
+        digest.update(f"{image.width}x{image.height}".encode("ascii"))
+        digest.update(image.tobytes())
+        return digest.hexdigest(), image.size, image.mode
+
+
+def read_image_info(path: Path) -> tuple[int, int, int]:
+    with Image.open(path) as image:
+        orientation = int(image.getexif().get(274, 1) or 1)
+        return image.width, image.height, orientation
+
+
+def safe_relative_path(root: Path, relative: str) -> Path:
+    cleaned = relative.strip().replace("\\", "/")
+    if not cleaned or cleaned.startswith("/"):
+        raise ValueError("相对路径无效")
+    path = (root / cleaned).resolve()
     try:
-        with Image.open(path) as image:
-            return int(image.getexif().get(274, 1))
-    except Exception:
-        return 1
+        path.relative_to(root.resolve())
+    except ValueError as exc:
+        raise ValueError("照片路径超出所选目录") from exc
+    return path
 
 
-EXIF_TRANSFORMS = {
-    2: "flip-horizontal",
-    3: "rotate-180",
-    4: "flip-vertical",
-    5: "transpose",
-    6: "rotate-90",
-    7: "transverse",
-    8: "rotate-270",
-}
+def iter_jpegs(root: Path, recursive: bool) -> Iterator[Path]:
+    iterator = root.rglob("*") if recursive else root.glob("*")
+    for path in iterator:
+        try:
+            relative_parts = path.relative_to(root).parts
+        except ValueError:
+            continue
+        if any(part in SKIP_DIR_NAMES or part.startswith(".") for part in relative_parts[:-1]):
+            continue
+        if path.is_file() and path.suffix.lower() in JPEG:
+            yield path
 
 
 def rotate_frame(frame, degrees: int):
+    if cv2 is None:
+        raise RuntimeError("当前环境缺少 OpenCV")
     if degrees == 0:
         return frame
     if degrees == 90:
@@ -80,6 +117,8 @@ def rotate_frame(frame, degrees: int):
 
 
 def load_for_detection(path: Path):
+    if cv2 is None:
+        raise RuntimeError("当前环境缺少 OpenCV")
     flags = cv2.IMREAD_COLOR
     if hasattr(cv2, "IMREAD_IGNORE_ORIENTATION"):
         flags |= cv2.IMREAD_IGNORE_ORIENTATION
@@ -88,8 +127,8 @@ def load_for_detection(path: Path):
         return None
     height, width = frame.shape[:2]
     longest = max(height, width)
-    if longest > 1800:
-        scale = 1800.0 / longest
+    if longest > 1600:
+        scale = 1600.0 / longest
         frame = cv2.resize(
             frame,
             (max(1, round(width * scale)), max(1, round(height * scale))),
@@ -99,6 +138,8 @@ def load_for_detection(path: Path):
 
 
 def face_score(cascade, frame) -> tuple[float, int]:
+    if cv2 is None:
+        raise RuntimeError("当前环境缺少 OpenCV")
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     gray = cv2.equalizeHist(gray)
     min_side = max(24, int(min(gray.shape[:2]) * 0.035))
@@ -115,429 +156,487 @@ def face_score(cascade, frame) -> tuple[float, int]:
     return len(faces) * 2.0 + area_score * 25.0, len(faces)
 
 
-def decide(path: Path, cascade, min_confidence: float, allow_180: bool) -> Decision:
-    orientation = read_exif_orientation(path)
-    if orientation in EXIF_TRANSFORMS:
-        return Decision(
-            action="normalize-exif",
-            transform=EXIF_TRANSFORMS[orientation],
-            reason=f"EXIF Orientation={orientation}；固化方向后视觉显示不变",
-            confidence=99.0,
+@dataclass
+class ScanItem:
+    id: str
+    relative_path: str
+    width: int
+    height: int
+    orientation: int
+    status: str
+    suggested_angle: int
+    confidence: float
+    reason: str
+    file_sha256: str
+    size: int
+    mtime_ns: int
+    scores: str = ""
+
+
+def candidate_id(relative: str, file_hash: str) -> str:
+    return hashlib.sha256(f"{relative}\0{file_hash}".encode("utf-8")).hexdigest()[:24]
+
+
+def classify(path: Path, relative: str, cascade, min_confidence: float, allow_180: bool) -> ScanItem:
+    width, height, orientation = read_image_info(path)
+    stat = path.stat()
+
+    if orientation != 1:
+        return ScanItem(
+            id=candidate_id(relative, f"exif:{stat.st_size}:{stat.st_mtime_ns}"),
+            relative_path=relative,
+            width=width,
+            height=height,
+            orientation=orientation,
+            file_sha256="",
+            size=stat.st_size,
+            mtime_ns=stat.st_mtime_ns,
+            status="exif-managed",
+            suggested_angle=ORIENTATION_TO_ANGLE.get(orientation, 0),
+            confidence=0.0,
+            reason=f"已有 EXIF Orientation={orientation}，2.0 不修改",
         )
+
+    file_hash = sha256_file(path)
+    common = {
+        "id": candidate_id(relative, file_hash),
+        "relative_path": relative,
+        "width": width,
+        "height": height,
+        "orientation": orientation,
+        "file_sha256": file_hash,
+        "size": stat.st_size,
+        "mtime_ns": stat.st_mtime_ns,
+    }
 
     frame = load_for_detection(path)
     if frame is None:
-        return Decision(action="skip", reason="无法读取图片")
+        return ScanItem(
+            **common,
+            status="unreadable",
+            suggested_angle=0,
+            confidence=0.0,
+            reason="OpenCV 无法读取照片",
+        )
 
-    angles = [0, 90, 270]
-    if allow_180:
-        angles.append(180)
-
-    scored = []
+    angles = [0, 90, 270] + ([180] if allow_180 else [])
+    scored: list[tuple[int, float, int]] = []
     for angle in angles:
         score, count = face_score(cascade, rotate_frame(frame, angle))
         scored.append((angle, score, count))
     scored.sort(key=lambda item: item[1], reverse=True)
-
     scores_text = ",".join(f"{angle}:{score:.3f}/{count}" for angle, score, count in scored)
     best_angle, best_score, best_count = scored[0]
     second_score = scored[1][1] if len(scored) > 1 else 0.0
-
-    if best_score <= 0 or best_count == 0:
-        return Decision(action="review", reason="未识别到正面人脸", scores=scores_text)
-
     confidence = best_score / max(second_score, 0.01)
-    if best_angle == 0:
-        return Decision(
-            action="ok",
-            reason="当前方向的人脸识别结果最佳",
-            confidence=confidence,
-            scores=scores_text,
-        )
-    if confidence < min_confidence:
-        return Decision(
-            action="review",
-            reason="多个方向结果接近，无法可靠判断",
-            confidence=confidence,
-            scores=scores_text,
-        )
-    return Decision(
-        action="face-suggest",
-        transform=f"rotate-{best_angle}",
-        reason="人脸方向建议（实验性，不会默认修改照片）",
+
+    if best_count == 0:
+        status, reason = "manual-review", "未识别到可用于判断方向的人脸"
+        best_angle = 0
+    elif best_angle == 0:
+        status, reason = "probably-correct", "人脸检测认为当前方向最可能正确"
+    elif confidence < min_confidence:
+        status, reason = "manual-review", "各方向检测结果接近，需要人工确认"
+    else:
+        status, reason = "suggested", "人脸检测建议，仅供人工确认，不会自动执行"
+
+    return ScanItem(
+        **common,
+        status=status,
+        suggested_angle=best_angle,
         confidence=confidence,
+        reason=reason,
         scores=scores_text,
     )
 
 
-JPEGTRAN_ARGS = {
-    "rotate-90": ["-rotate", "90"],
-    "rotate-180": ["-rotate", "180"],
-    "rotate-270": ["-rotate", "270"],
-    "flip-horizontal": ["-flip", "horizontal"],
-    "flip-vertical": ["-flip", "vertical"],
-    "transpose": ["-transpose"],
-    "transverse": ["-transverse"],
-}
-
-PIL_METHODS = {
-    "rotate-90": Image.Transpose.ROTATE_270,
-    "rotate-180": Image.Transpose.ROTATE_180,
-    "rotate-270": Image.Transpose.ROTATE_90,
-    "flip-horizontal": Image.Transpose.FLIP_LEFT_RIGHT,
-    "flip-vertical": Image.Transpose.FLIP_TOP_BOTTOM,
-    "transpose": Image.Transpose.TRANSPOSE,
-    "transverse": Image.Transpose.TRANSVERSE,
-}
-
-
-def reset_orientation(path: Path) -> None:
-    subprocess.run(
-        [
-            "exiftool",
-            "-overwrite_original_in_place",
-            "-n",
-            "-Orientation=1",
-            str(path),
-        ],
-        check=True,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
-    )
-
-
-def apply_transform(path: Path, transform: str) -> None:
-    stat = path.stat()
-    suffix = path.suffix.lower()
-    temp_fd, temp_name = tempfile.mkstemp(prefix=".rotate-", suffix=suffix, dir=str(path.parent))
-    os.close(temp_fd)
-    temp = Path(temp_name)
-    try:
-        if suffix in JPEG:
-            with temp.open("wb") as output:
-                subprocess.run(
-                    ["jpegtran", "-copy", "all", *JPEGTRAN_ARGS[transform], str(path)],
-                    check=True,
-                    stdout=output,
-                    stderr=subprocess.PIPE,
-                )
-            reset_orientation(temp)
-        else:
-            with Image.open(path) as image:
-                metadata = {
-                    key: value
-                    for key, value in image.info.items()
-                    if key in {"icc_profile", "dpi"}
-                }
-                exif = image.getexif()
-                if exif:
-                    exif[274] = 1
-                    metadata["exif"] = exif.tobytes()
-                result = image.transpose(PIL_METHODS[transform])
-                result.save(temp, **metadata)
-        os.replace(temp, path)
-        os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns))
-    finally:
-        temp.unlink(missing_ok=True)
-
-
-def backup_file(source_root: Path, path: Path, backup_root: Path) -> Path:
-    target = backup_root / path.relative_to(source_root)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    if not target.exists():
-        shutil.copy2(path, target)
-    return target
-
-
-def iter_images(root: Path, recursive: bool):
-    iterator = root.rglob("*") if recursive else root.glob("*")
-    for path in iterator:
-        try:
-            relative_parts = path.relative_to(root).parts
-        except ValueError:
-            continue
-        if any(part in SKIP_DIR_NAMES or part.startswith(".") for part in relative_parts[:-1]):
-            continue
-        if path.is_file() and path.suffix.lower() in SUPPORTED:
-            yield path
-
-
-def safe_csv_path(source: Path, relative: str) -> Path:
-    cleaned = relative.strip().replace("\\", "/")
-    if not cleaned or cleaned.startswith("/"):
-        raise ValueError("CSV 中的相对路径无效")
-    path = (source / cleaned).resolve()
-    try:
-        path.relative_to(source)
-    except ValueError as exc:
-        raise ValueError("CSV 路径超出照片目录") from exc
-    return path
-
-
-def iter_csv_decisions(csv_path: Path, source: Path):
-    with csv_path.open("r", newline="", encoding="utf-8-sig") as csv_file:
-        reader = csv.DictReader(csv_file)
-        required = {"状态", "操作", "原因", "相对路径"}
-        if not reader.fieldnames or not required.issubset(reader.fieldnames):
-            raise ValueError("CSV 格式不兼容，缺少状态、操作、原因或相对路径列")
-        for row in reader:
-            status = (row.get("状态") or "").strip()
-            reason = (row.get("原因") or "").strip()
-            transform = (row.get("操作") or "").strip()
-            relative = (row.get("相对路径") or "").strip()
-
-            # 兼容 v0.1.2 及更早版本的 would-rotate + EXIF Orientation=N。
-            is_exif = reason.startswith("EXIF Orientation=")
-            is_face = status in {"face-suggest", "would-rotate"} and not is_exif
-            if not is_exif and not is_face:
-                continue
-            yield safe_csv_path(source, relative), relative, transform, reason, is_exif
-
-
-def restore_task_changes(csv_path: Path, source: Path, work: Path) -> int:
-    backup_root = work / "backups"
-    restored = 0
-    missing = 0
-    failed = 0
-
-    with csv_path.open("r", newline="", encoding="utf-8-sig") as csv_file:
-        reader = csv.DictReader(csv_file)
-        required = {"状态", "相对路径"}
-        if not reader.fieldnames or not required.issubset(reader.fieldnames):
-            raise ValueError("恢复清单格式不兼容")
-
-        for row in reader:
-            if (row.get("状态") or "").strip() not in {"rotated-face", "normalized-exif"}:
-                continue
-            relative = (row.get("相对路径") or "").strip()
-            target = safe_csv_path(source, relative)
-            backup = safe_csv_path(backup_root, relative)
-            if not backup.is_file():
-                missing += 1
-                print(f"[restore-missing] {relative}")
-                continue
-            try:
-                target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(backup, target)
-                restored += 1
-                print(f"[restored      ] {relative}")
-            except Exception as exc:
-                failed += 1
-                print(f"[restore-error ] {relative}: {exc}", file=sys.stderr)
-
-    print("")
-    print(f"已恢复本次任务改动：{restored} 张")
-    print(f"缺少备份：{missing} 张；恢复失败：{failed} 张")
-    return 0 if missing == 0 and failed == 0 else 1
-
-
-def refresh_restored_task(csv_path: Path, source: Path, work: Path) -> int:
-    backup_root = work / "backups"
-    refreshed = 0
-    mismatch = 0
-    missing = 0
-    seen: set[str] = set()
-
-    with csv_path.open("r", newline="", encoding="utf-8-sig") as csv_file:
-        reader = csv.DictReader(csv_file)
-        required = {"状态", "相对路径"}
-        if not reader.fieldnames or not required.issubset(reader.fieldnames):
-            raise ValueError("刷新清单格式不兼容")
-
-        for row in reader:
-            if (row.get("状态") or "").strip() not in {"rotated-face", "normalized-exif"}:
-                continue
-            relative = (row.get("相对路径") or "").strip()
-            if relative in seen:
-                continue
-            seen.add(relative)
-            target = safe_csv_path(source, relative)
-            backup = safe_csv_path(backup_root, relative)
-            if not target.is_file() or not backup.is_file():
-                missing += 1
-                print(f"[refresh-missing] {relative}")
-                continue
-            if not filecmp.cmp(target, backup, shallow=False):
-                mismatch += 1
-                print(f"[refresh-refused] 当前文件与原图备份不一致：{relative}")
-                continue
-            os.utime(target, None)
-            refreshed += 1
-            print(f"[index-refresh ] {relative}")
-
-    print("")
-    print(f"已触发飞牛重新索引：{refreshed} 张")
-    print(f"文件与备份不一致，拒绝刷新：{mismatch} 张；缺失：{missing} 张")
-    return 0 if mismatch == 0 and missing == 0 else 1
-
-
-def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--source", type=Path, required=True)
-    parser.add_argument("--work", type=Path, required=True)
-    parser.add_argument("--mode", choices=["scan", "apply"], default="scan")
-    parser.add_argument("--recursive", default="yes")
-    parser.add_argument("--min-confidence", type=float, default=1.35)
-    parser.add_argument("--allow-180", default="no")
-    parser.add_argument("--min-age-minutes", type=int, default=10)
-    parser.add_argument("--backup", default="yes")
-    parser.add_argument("--apply-face-suggestions", default="no")
-    parser.add_argument("--input-csv", type=Path)
-    parser.add_argument("--restore-task-csv", type=Path)
-    parser.add_argument("--refresh-task-csv", type=Path)
-    args = parser.parse_args()
-
-    source = args.source.resolve()
-    work = args.work.resolve()
-    work.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    log_path = work / "logs" / f"photo-rotate-{args.mode}-{timestamp}.csv"
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    backup_root = work / "backups"
-
-    if args.restore_task_csv:
-        return restore_task_changes(args.restore_task_csv.resolve(), source, work)
-    if args.refresh_task_csv:
-        return refresh_restored_task(args.refresh_task_csv.resolve(), source, work)
-
-    cascade_candidates = []
+def load_cascade():
+    if cv2 is None:
+        raise RuntimeError("当前环境缺少 OpenCV")
+    candidates: list[Path] = []
     cv2_data = getattr(cv2, "data", None)
     if cv2_data is not None:
-        cascade_candidates.append(
-            Path(cv2_data.haarcascades) / "haarcascade_frontalface_default.xml"
-        )
-    cascade_candidates.extend(
+        candidates.append(Path(cv2_data.haarcascades) / "haarcascade_frontalface_default.xml")
+    candidates.extend(
         [
             Path("/usr/share/opencv4/haarcascades/haarcascade_frontalface_default.xml"),
             Path("/usr/share/opencv/haarcascades/haarcascade_frontalface_default.xml"),
         ]
     )
-    cascade_path = next((path for path in cascade_candidates if path.is_file()), None)
+    cascade_path = next((path for path in candidates if path.is_file()), None)
     if cascade_path is None:
-        print("错误：未找到 OpenCV 人脸检测模型。", file=sys.stderr)
-        return 2
+        raise RuntimeError("未找到 OpenCV 人脸检测模型")
     cascade = cv2.CascadeClassifier(str(cascade_path))
     if cascade.empty():
-        print("错误：无法加载人脸检测模型。", file=sys.stderr)
-        return 2
+        raise RuntimeError("无法加载 OpenCV 人脸检测模型")
+    return cascade
 
-    counts = {
-        "total": 0,
-        "normalize-exif": 0,
-        "face-suggest": 0,
-        "face-rotated": 0,
-        "ok": 0,
-        "review": 0,
-        "skip": 0,
-        "error": 0,
+
+def write_json_atomic(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
+    temp = Path(temp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp, path)
+        fsync_directory(path.parent)
+    finally:
+        temp.unlink(missing_ok=True)
+
+
+def scan(source: Path, work: Path, recursive: bool, min_confidence: float, allow_180: bool, min_age_minutes: int) -> int:
+    cascade = load_cascade()
+    started = utc_now()
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    scan_path = work / "scans" / f"photo-orientation-scan-{stamp}.json"
+    cutoff = time.time() - max(0, min_age_minutes) * 60
+    items: list[dict] = []
+    counts: dict[str, int] = {}
+    errors = 0
+
+    for path in iter_jpegs(source, recursive):
+        relative = path.relative_to(source).as_posix()
+        if path.stat().st_mtime > cutoff:
+            counts["too-recent"] = counts.get("too-recent", 0) + 1
+            continue
+        try:
+            item = classify(path, relative, cascade, min_confidence, allow_180)
+            items.append(asdict(item))
+            counts[item.status] = counts.get(item.status, 0) + 1
+            print(f"[{item.status:16}] {item.suggested_angle:3}° {relative}", flush=True)
+        except Exception as exc:
+            errors += 1
+            print(f"[scan-error       ] {relative}: {exc}", file=sys.stderr, flush=True)
+
+    payload = {
+        "schema": SCHEMA_VERSION,
+        "kind": "photo-orientation-scan",
+        "created_at": started,
+        "finished_at": utc_now(),
+        "source": str(source),
+        "settings": {
+            "recursive": recursive,
+            "min_confidence": min_confidence,
+            "allow_180": allow_180,
+            "min_age_minutes": min_age_minutes,
+        },
+        "counts": {**counts, "errors": errors, "total": len(items)},
+        "items": items,
     }
-    cutoff = time.time() - max(0, args.min_age_minutes) * 60
-
-    with log_path.open("w", newline="", encoding="utf-8-sig") as log_file:
-        writer = csv.writer(log_file)
-        writer.writerow(
-            ["状态", "操作", "可信度", "原因", "相对路径", "各方向分数", "备份路径"]
-        )
-
-        if args.input_csv:
-            items = iter_csv_decisions(args.input_csv.resolve(), source)
-        else:
-            items = ((path, str(path.relative_to(source)), "", "", None) for path in iter_images(source, yes(args.recursive)))
-
-        for path, relative, csv_transform, csv_reason, csv_is_exif in items:
-            counts["total"] += 1
-            if not path.is_file():
-                counts["skip"] += 1
-                writer.writerow(["skip", "", "", "CSV 中的照片不存在", relative, "", ""])
-                continue
-            if path.stat().st_mtime > cutoff:
-                counts["skip"] += 1
-                writer.writerow(["skip", "", "", "文件修改时间过近", relative, "", ""])
-                continue
-
-            try:
-                if args.input_csv:
-                    if csv_is_exif:
-                        current_orientation = read_exif_orientation(path)
-                        current_transform = EXIF_TRANSFORMS.get(current_orientation)
-                        if current_transform is None:
-                            decision = Decision(
-                                action="skip",
-                                reason="当前 EXIF 已是正常方向，跳过以防重复旋转",
-                            )
-                        elif current_transform != csv_transform:
-                            decision = Decision(
-                                action="review",
-                                reason=f"当前 EXIF 方向与 CSV 不一致：Orientation={current_orientation}",
-                            )
-                        else:
-                            decision = Decision(
-                                action="normalize-exif",
-                                transform=current_transform,
-                                reason=f"从 CSV 导入；EXIF Orientation={current_orientation}；固化后视觉显示不变",
-                                confidence=99.0,
-                            )
-                    else:
-                        decision = Decision(
-                            action="face-suggest",
-                            transform=csv_transform,
-                            reason="从旧版 CSV 导入的人脸方向建议（实验性）",
-                        )
-                else:
-                    decision = decide(path, cascade, args.min_confidence, yes(args.allow_180))
-                backup_path = ""
-                status = decision.action
-
-                if decision.action == "normalize-exif":
-                    counts["normalize-exif"] += 1
-                    if args.mode == "apply":
-                        if yes(args.backup):
-                            backup_path = str(backup_file(source, path, backup_root))
-                        apply_transform(path, decision.transform)
-                        status = "normalized-exif"
-                    else:
-                        status = "would-normalize-exif"
-                elif decision.action == "face-suggest":
-                    counts["face-suggest"] += 1
-                    # Haar 人脸方向检测误报率较高，只保留建议，永不自动修改照片。
-                    status = "face-suggest"
-                elif decision.action in counts:
-                    counts[decision.action] += 1
-
-                writer.writerow(
-                    [
-                        status,
-                        decision.transform,
-                        f"{decision.confidence:.3f}",
-                        decision.reason,
-                        relative,
-                        decision.scores,
-                        backup_path,
-                    ]
-                )
-                print(f"[{status:12}] {decision.transform:15} {relative}")
-            except Exception as exc:
-                counts["error"] += 1
-                writer.writerow(["error", "", "", str(exc), relative, "", ""])
-                print(f"[error       ] {relative}: {exc}", file=sys.stderr)
-
+    write_json_atomic(scan_path, payload)
     print("")
-    print(f"模式：{args.mode}")
-    print(f"扫描：{counts['total']} 张")
-    print(f"EXIF 方向待固化：{counts['normalize-exif']} 张（视觉方向不变）")
-    print(f"人脸方向建议：{counts['face-suggest']} 张（默认不修改）")
-    print(f"已按人脸建议旋转：{counts['face-rotated']} 张")
-    print(f"方向正常：{counts['ok']} 张")
-    print(f"需人工复核：{counts['review']} 张")
-    print(f"跳过：{counts['skip']} 张；错误：{counts['error']} 张")
-    print(f"详细清单：{log_path}")
-    if args.input_csv:
-        print(f"导入清单：{args.input_csv}")
-    if args.mode == "scan":
-        print("当前仅演练，没有修改任何照片。确认清单后，把 MODE 改成 apply 再运行。")
-    elif yes(args.backup):
-        print(f"原图备份：{backup_root}")
-    return 0 if counts["error"] == 0 else 1
+    print(f"扫描完成：{len(items)} 张 JPEG；错误：{errors} 张")
+    print(f"建议人工确认：{counts.get('suggested', 0)} 张")
+    print(f"已有 EXIF 方向且保持不动：{counts.get('exif-managed', 0)} 张")
+    print(f"SCAN_FILE={scan_path}")
+    return 0 if errors == 0 else 1
+
+
+def run_exiftool_set_orientation(path: Path, orientation: int) -> None:
+    exiftool = os.environ.get("EXIFTOOL_BIN", "exiftool")
+    result = subprocess.run(
+        [
+            exiftool,
+            "-overwrite_original",
+            "-n",
+            f"-EXIF:Orientation#={orientation}",
+            str(path),
+        ],
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"ExifTool 写入失败：{result.stderr.strip() or result.stdout.strip()}")
+
+
+def fsync_file(path: Path) -> None:
+    with path.open("r+b") as handle:
+        os.fsync(handle.fileno())
+
+
+def fsync_directory(path: Path) -> None:
+    if os.name == "nt":
+        return
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def atomic_restore(backup: Path, target: Path) -> None:
+    fd, temp_name = tempfile.mkstemp(prefix=".orientation-restore-", suffix=target.suffix, dir=str(target.parent))
+    os.close(fd)
+    temp = Path(temp_name)
+    try:
+        shutil.copy2(backup, temp)
+        fsync_file(temp)
+        os.replace(temp, target)
+        fsync_directory(target.parent)
+    finally:
+        temp.unlink(missing_ok=True)
+
+
+def apply_metadata_orientation(
+    source: Path,
+    relative: str,
+    angle: int,
+    expected_file_sha256: str,
+    task_dir: Path,
+) -> dict:
+    if angle not in ANGLE_TO_ORIENTATION:
+        raise ValueError("只允许 90、180 或 270 度")
+    target = safe_relative_path(source, relative)
+    if target.suffix.lower() not in JPEG or not target.is_file():
+        raise ValueError("目标必须是现有 JPEG 文件")
+
+    current_hash = sha256_file(target)
+    if current_hash != expected_file_sha256:
+        raise RuntimeError("照片在扫描后发生变化，拒绝处理")
+    _, _, current_orientation = read_image_info(target)
+    if current_orientation != 1:
+        raise RuntimeError(f"当前 Orientation={current_orientation}，不再是待处理状态")
+
+    before_pixel_hash, before_size, before_mode = decoded_pixel_fingerprint(target)
+    backup = safe_relative_path(task_dir / "backups", relative)
+    backup.parent.mkdir(parents=True, exist_ok=True)
+    if backup.exists():
+        raise RuntimeError("本任务备份路径已存在，拒绝覆盖")
+    shutil.copy2(target, backup)
+    fsync_file(backup)
+    if sha256_file(backup) != current_hash:
+        backup.unlink(missing_ok=True)
+        raise RuntimeError("原图备份校验失败")
+
+    fd, temp_name = tempfile.mkstemp(prefix=".orientation-stage-", suffix=target.suffix, dir=str(target.parent))
+    os.close(fd)
+    staged = Path(temp_name)
+    replaced = False
+    try:
+        shutil.copy2(target, staged)
+        orientation = ANGLE_TO_ORIENTATION[angle]
+        run_exiftool_set_orientation(staged, orientation)
+
+        staged_pixel_hash, staged_size, staged_mode = decoded_pixel_fingerprint(staged)
+        if (staged_pixel_hash, staged_size, staged_mode) != (before_pixel_hash, before_size, before_mode):
+            raise RuntimeError("安全校验失败：写入后像素或尺寸发生变化")
+        _, _, staged_orientation = read_image_info(staged)
+        if staged_orientation != orientation:
+            raise RuntimeError("安全校验失败：EXIF Orientation 写入结果不正确")
+
+        fsync_file(staged)
+        os.replace(staged, target)
+        fsync_directory(target.parent)
+        replaced = True
+
+        after_pixel_hash, after_size, after_mode = decoded_pixel_fingerprint(target)
+        _, _, after_orientation = read_image_info(target)
+        if (
+            (after_pixel_hash, after_size, after_mode) != (before_pixel_hash, before_size, before_mode)
+            or after_orientation != orientation
+        ):
+            atomic_restore(backup, target)
+            raise RuntimeError("替换后复核失败，已自动恢复原图")
+        os.utime(target, None)
+
+        return {
+            "relative_path": relative,
+            "angle": angle,
+            "orientation": orientation,
+            "before_sha256": current_hash,
+            "after_sha256": sha256_file(target),
+            "pixel_sha256": before_pixel_hash,
+            "backup": str(backup),
+            "status": "applied",
+            "applied_at": utc_now(),
+        }
+    except Exception:
+        if replaced and target.exists() and sha256_file(target) != current_hash:
+            atomic_restore(backup, target)
+        raise
+    finally:
+        staged.unlink(missing_ok=True)
+
+
+def apply_manifest(source: Path, work: Path, manifest_path: Path) -> int:
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if manifest.get("schema") != SCHEMA_VERSION or manifest.get("kind") != "photo-orientation-approval":
+        raise ValueError("审批清单格式无效")
+    if Path(manifest.get("source", "")).resolve() != source:
+        raise ValueError("审批清单与当前照片目录不一致")
+
+    task_id = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+    task_dir = work / "tasks" / task_id
+    task_dir.mkdir(parents=True, exist_ok=False)
+    task_manifest_path = task_dir / "manifest.json"
+    results: list[dict] = []
+    failed = 0
+
+    def save_task() -> dict:
+        task_manifest = {
+            "schema": SCHEMA_VERSION,
+            "kind": "photo-orientation-task",
+            "task_id": task_id,
+            "source": str(source),
+            "created_at": utc_now(),
+            "approval_manifest": str(manifest_path),
+            "results": results,
+            "summary": {
+                "requested": len(manifest.get("items", [])),
+                "applied": sum(item.get("status") == "applied" for item in results),
+                "failed": sum(item.get("status") == "error" for item in results),
+            },
+        }
+        write_json_atomic(task_manifest_path, task_manifest)
+        return task_manifest
+
+    save_task()
+
+    for item in manifest.get("items", []):
+        relative = str(item.get("relative_path", ""))
+        pending = {
+            "relative_path": relative,
+            "angle": int(item.get("angle", 0)),
+            "orientation": ANGLE_TO_ORIENTATION.get(int(item.get("angle", 0)), 0),
+            "before_sha256": str(item.get("file_sha256", "")),
+            "backup": str(safe_relative_path(task_dir / "backups", relative)),
+            "status": "pending",
+        }
+        results.append(pending)
+        save_task()
+        try:
+            result = apply_metadata_orientation(
+                source=source,
+                relative=relative,
+                angle=int(item.get("angle", 0)),
+                expected_file_sha256=str(item.get("file_sha256", "")),
+                task_dir=task_dir,
+            )
+            results[-1] = result
+            print(f"[metadata-applied] {result['angle']:3}° {relative}", flush=True)
+        except Exception as exc:
+            failed += 1
+            results[-1] = {**pending, "status": "error", "error": str(exc)}
+            print(f"[apply-refused   ] {relative}: {exc}", file=sys.stderr, flush=True)
+        save_task()
+
+    task_manifest = save_task()
+    print("")
+    print(f"任务完成：成功 {task_manifest['summary']['applied']} 张；拒绝/失败 {failed} 张")
+    print(f"TASK_FILE={task_manifest_path}")
+    return 0 if failed == 0 else 1
+
+
+def rollback_task(source: Path, task_manifest_path: Path) -> int:
+    task = json.loads(task_manifest_path.read_text(encoding="utf-8"))
+    if task.get("schema") != SCHEMA_VERSION or task.get("kind") != "photo-orientation-task":
+        raise ValueError("任务清单格式无效")
+    if Path(task.get("source", "")).resolve() != source:
+        raise ValueError("任务清单与当前照片目录不一致")
+
+    restored = 0
+    refused = 0
+    for item in task.get("results", []):
+        if item.get("status") not in {"applied", "pending"}:
+            continue
+        target = safe_relative_path(source, item["relative_path"])
+        backup = Path(item["backup"]).resolve()
+        try:
+            backup.relative_to(task_manifest_path.parent.resolve() / "backups")
+        except ValueError:
+            refused += 1
+            print(f"[rollback-refused] 备份路径超出本任务目录：{item['relative_path']}")
+            continue
+        if not backup.is_file() or not target.is_file():
+            refused += 1
+            print(f"[rollback-refused] 文件或备份不存在：{item['relative_path']}")
+            continue
+        if sha256_file(backup) != item["before_sha256"]:
+            refused += 1
+            print(f"[rollback-refused] 备份校验失败：{item['relative_path']}")
+            continue
+        current_hash = sha256_file(target)
+        if current_hash == item["before_sha256"]:
+            print(f"[rollback-original] 已经是原图：{item['relative_path']}")
+            item["status"] = "rolled-back"
+            item["rolled_back_at"] = utc_now()
+            write_json_atomic(task_manifest_path, task)
+            continue
+        if item.get("status") == "applied":
+            if current_hash != item["after_sha256"]:
+                refused += 1
+                print(f"[rollback-refused] 照片在任务后又被修改：{item['relative_path']}")
+                continue
+        else:
+            backup_pixels = decoded_pixel_fingerprint(backup)
+            current_pixels = decoded_pixel_fingerprint(target)
+            _, _, current_orientation = read_image_info(target)
+            if current_pixels != backup_pixels or current_orientation != item.get("orientation"):
+                refused += 1
+                print(f"[rollback-refused] 中断项无法证明是本任务改动：{item['relative_path']}")
+                continue
+        atomic_restore(backup, target)
+        if sha256_file(target) != item["before_sha256"]:
+            refused += 1
+            print(f"[rollback-error  ] 恢复后校验失败：{item['relative_path']}")
+            continue
+        os.utime(target, None)
+        restored += 1
+        item["status"] = "rolled-back"
+        item["rolled_back_at"] = utc_now()
+        write_json_atomic(task_manifest_path, task)
+        print(f"[rolled-back     ] {item['relative_path']}")
+
+    task["rollback_summary"] = {"restored": restored, "refused": refused, "finished_at": utc_now()}
+    write_json_atomic(task_manifest_path, task)
+    print(f"回滚完成：恢复 {restored} 张；拒绝 {refused} 张")
+    return 0 if refused == 0 else 1
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="fnOS 照片方向安全修正 2.0")
+    parser.add_argument("--source", type=Path, required=True)
+    parser.add_argument("--work", type=Path, required=True)
+    parser.add_argument("--mode", choices=["scan", "apply-manifest", "rollback-task"], default="scan")
+    parser.add_argument("--manifest", type=Path)
+    parser.add_argument("--recursive", default="yes")
+    parser.add_argument("--min-confidence", type=float, default=1.35)
+    parser.add_argument("--allow-180", default="no")
+    parser.add_argument("--min-age-minutes", type=int, default=10)
+    args = parser.parse_args()
+
+    source = args.source.resolve()
+    work = args.work.resolve()
+    if not source.is_dir():
+        print("照片目录不存在", file=sys.stderr)
+        return 2
+    work.mkdir(parents=True, exist_ok=True)
+
+    try:
+        if args.mode == "scan":
+            return scan(
+                source,
+                work,
+                yes(args.recursive),
+                args.min_confidence,
+                yes(args.allow_180),
+                args.min_age_minutes,
+            )
+        if args.manifest is None:
+            raise ValueError("当前模式需要 --manifest")
+        if args.mode == "apply-manifest":
+            return apply_manifest(source, work, args.manifest.resolve())
+        return rollback_task(source, args.manifest.resolve())
+    except Exception as exc:
+        print(f"任务失败：{exc}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

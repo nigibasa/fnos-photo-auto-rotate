@@ -4,7 +4,7 @@
     "items": [
       {
         "type": "tips",
-        "helpText": "卸载应用不会删除 /vol1/docker/fnos-photo-auto-rotate 中的配置、CSV 清单和原图备份。确认不再需要后可手动删除。"
+        "helpText": "卸载应用不会删除 /vol1/docker/fnos-photo-auto-rotate 中的配置、扫描清单、任务记录和原图备份。确认不再需要后可手动删除。"
       }
     ]
   }

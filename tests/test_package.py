@@ -24,7 +24,7 @@ class PackageTests(unittest.TestCase):
                     sys.executable,
                     str(ROOT / "build_fpk.py"),
                     "--image",
-                    "ghcr.io/example/fnos-photo-auto-rotate:0.1.6",
+                    "ghcr.io/example/fnos-photo-auto-rotate:2.0.0",
                     "--platform",
                     "x86",
                     "--output",
@@ -43,20 +43,21 @@ class PackageTests(unittest.TestCase):
         self.assertIn("docker/build-push-action", workflow)
         self.assertIn("build_fpk.py", workflow)
 
-    def test_csv_import_contract_is_present(self) -> None:
+    def test_v2_safety_contract_is_present(self) -> None:
         rotator = (ROOT / "photo_auto_rotate.py").read_text(encoding="utf-8")
         server = (ROOT / "server.py").read_text(encoding="utf-8")
         web = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
-        self.assertIn("--input-csv", rotator)
-        self.assertIn("would-normalize-exif", rotator)
-        self.assertIn("当前 EXIF 已是正常方向", rotator)
-        self.assertIn("/api/run-csv", server)
-        self.assertIn("/api/restore-task", server)
-        self.assertIn("/api/refresh-task", server)
-        self.assertNotIn('id="applyFace"', web)
-        self.assertIn("从备份恢复本次全部改动", web)
-        self.assertIn("校验原图并刷新飞牛索引", web)
-        self.assertIn("CSV 执行已暂停", web)
+        self.assertIn("apply_metadata_orientation", rotator)
+        self.assertIn("decoded_pixel_fingerprint", rotator)
+        self.assertIn("照片在扫描后发生变化，拒绝处理", rotator)
+        self.assertIn("已有 EXIF Orientation=", rotator)
+        self.assertNotIn("jpegtran", rotator)
+        self.assertNotIn("Image.Transpose", rotator)
+        self.assertIn("/api/apply", server)
+        self.assertIn("/api/rollback", server)
+        self.assertIn("APPLY METADATA", server)
+        self.assertIn("只有勾选的照片才会写入 EXIF", web)
+        self.assertIn("不旋转、不裁剪、不重新压缩照片像素", web)
 
 
 if __name__ == "__main__":
