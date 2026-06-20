@@ -12,4 +12,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: python -m unittest discover -s tests -v
+      - name: Install safety-test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libimage-exiftool-perl
+          python -m pip install pillow
+      - name: Run safety regression tests
+        run: python -m unittest discover -s tests -v
