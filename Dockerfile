@@ -34,7 +34,7 @@ RUN apt-get update \
 
 COPY --from=python-deps /opt/python /opt/python
 ADD --checksum=sha256:8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4 \
-    https://raw.githubusercontent.com/opencv/opencv_zoo/47534e27c9851bb1128ccc0102f1145e27f23f98/models/face_detection_yunet/face_detection_yunet_2023mar.onnx \
+    https://media.githubusercontent.com/media/opencv/opencv_zoo/f12e12798e8314f7c074a6656816c048dcc95b7a/models/face_detection_yunet/face_detection_yunet_2023mar.onnx \
     /app/models/face_detection_yunet_2023mar.onnx
 COPY photo_auto_rotate.py /app/photo_auto_rotate.py
 COPY server.py /app/server.py
