@@ -191,6 +191,11 @@ def public_scan_summary(path: Path | None, scan: dict | None) -> dict | None:
     }
 
 
+def ensure_scan_backend_safe(scan: dict) -> None:
+    if scan.get("backend") == "opencl":
+        raise ValueError("该扫描由已禁用的 OpenCL 核显后端生成，请升级后使用 CPU 重新扫描")
+
+
 def public_task_summary(path: Path | None, task: dict | None) -> dict | None:
     if path is None or task is None:
         return None
@@ -540,6 +545,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not scan_name or not scan_path.is_file():
                     raise ValueError("扫描结果不存在")
                 scan = json.loads(scan_path.read_text(encoding="utf-8"))
+                ensure_scan_backend_safe(scan)
                 config = save_config(payload.get("config", load_config()))
                 if Path(scan["source"]).resolve() != Path(config["source"]).resolve():
                     raise ValueError("扫描目录与当前目录不一致")

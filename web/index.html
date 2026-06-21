@@ -101,8 +101,8 @@
       </div>
       <label for="acceleration">扫描加速</label>
       <select id="acceleration">
-        <option value="auto">自动：UHD 600 可用时使用核显</option>
-        <option value="gpu">优先使用 Intel 核显，失败则回退</option>
+        <option value="auto">自动：通过兼容性检查才使用核显</option>
+        <option value="gpu">尝试 Intel 核显（不兼容则强制 CPU）</option>
         <option value="cpu">只使用 CPU</option>
       </select>
       <label for="workers">CPU 工作进程（J4125 推荐 2）</label>

@@ -151,6 +151,35 @@ class AcceleratedScanTests(unittest.TestCase):
         self.assertEqual(backend, "cpu")
         self.assertIn("OpenCL", details["fallback"])
 
+    def test_gemini_lake_opencl_is_safety_blocked_even_when_gpu_is_forced(self) -> None:
+        class FakeDevice:
+            @staticmethod
+            def name():
+                return "Intel(R) UHD Graphics 600"
+
+        class FakeOcl:
+            @staticmethod
+            def haveOpenCL():
+                return True
+
+            @staticmethod
+            def Device_getDefault():
+                return FakeDevice()
+
+        class FakeCv2:
+            ocl = FakeOcl()
+
+        with patch.object(rotator, "cv2", FakeCv2()):
+            backend, details = rotator.benchmark_acceleration(Path("missing.onnx"), "gpu")
+        self.assertEqual(backend, "cpu")
+        self.assertTrue(details["safety_blocked"])
+        self.assertIn("Gemini Lake", details["fallback"])
+
+    def test_opencl_generated_scan_is_refused_for_apply(self) -> None:
+        with self.assertRaisesRegex(ValueError, "OpenCL"):
+            webserver.ensure_scan_backend_safe({"backend": "opencl"})
+        webserver.ensure_scan_backend_safe({"backend": "cpu"})
+
     def test_resume_rescans_photo_changed_after_checkpoint(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

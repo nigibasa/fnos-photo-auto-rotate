@@ -45,7 +45,7 @@ SKIP_DIR_NAMES = {
 ANGLE_TO_ORIENTATION = {90: 6, 180: 3, 270: 8}
 ORIENTATION_TO_ANGLE = {1: 0, 3: 180, 6: 90, 8: 270}
 SCHEMA_VERSION = 2
-MODEL_VERSION = "yunet-2023mar"
+MODEL_VERSION = "yunet-2023mar-j4125-safe"
 DEFAULT_MODEL = Path(os.environ.get("YUNET_MODEL", "/app/models/face_detection_yunet_2023mar.onnx"))
 _CPU_DETECTOR = None
 
@@ -410,6 +410,28 @@ def classify_gpu_prepared(prepared: dict, detector, min_confidence: float, allow
     )
 
 
+def opencl_device_name() -> str:
+    if cv2 is None:
+        return ""
+    try:
+        return str(cv2.ocl.Device_getDefault().name())
+    except Exception:
+        return ""
+
+
+def unsafe_opencl_device_reason(device_name: str) -> str:
+    normalized = device_name.casefold()
+    blocked_markers = (
+        "uhd graphics 600",
+        "uhd graphics 605",
+        "gemini lake",
+        "geminilake",
+    )
+    if any(marker in normalized for marker in blocked_markers):
+        return "该 Intel Gemini Lake 核显的 OpenCL 卷积结果存在已确认的不一致"
+    return ""
+
+
 def benchmark_acceleration(model: Path, requested: str, cpu_workers: int = 2) -> tuple[str, dict]:
     if cv2 is None:
         raise RuntimeError("当前环境缺少 OpenCV")
@@ -418,8 +440,14 @@ def benchmark_acceleration(model: Path, requested: str, cpu_workers: int = 2) ->
         "cpu_workers": cpu_workers,
         "opencl_available": bool(cv2.ocl.haveOpenCL()),
         "opencl_enabled": False,
+        "opencl_device": opencl_device_name(),
     }
     if requested == "cpu":
+        return "cpu", details
+    unsafe_reason = unsafe_opencl_device_reason(details["opencl_device"])
+    if unsafe_reason:
+        details["fallback"] = unsafe_reason
+        details["safety_blocked"] = True
         return "cpu", details
     if not details["opencl_available"] or not Path("/dev/dri").exists():
         details["fallback"] = "未检测到 /dev/dri 或 OpenCL"
