@@ -71,6 +71,8 @@ class PackageTests(unittest.TestCase):
         self.assertIn("FaceDetectorYN", rotator)
         self.assertIn("photo-orientation-scan-progress", rotator)
         self.assertIn("/api/selections", server)
+        self.assertIn('id="pageInput"', web)
+        self.assertIn("function goToPage(page)", web)
         dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
         self.assertIn("opencv-python-headless==4.10.0.84", dockerfile)
         self.assertNotIn("python3-opencv", dockerfile)

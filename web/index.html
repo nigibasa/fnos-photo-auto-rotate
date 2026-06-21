@@ -64,7 +64,9 @@
     .angle-row button { padding:7px 4px }
     .select-row { display:flex; align-items:center; gap:8px; font-weight:700; font-size:13px }
     .empty { grid-column:1/-1; padding:50px; text-align:center; color:var(--muted); border:1px dashed var(--line) }
-    .pager { display:flex; justify-content:center; gap:10px; align-items:center; margin-top:16px }
+    .pager { display:flex; justify-content:center; gap:8px; align-items:center; flex-wrap:wrap; margin-top:16px }
+    .pager input { width:74px; padding:10px; text-align:center }
+    .pager .page-jump { display:flex; align-items:center; gap:6px; margin:0 4px }
     dialog { width:min(720px,calc(100vw - 30px)); border:1px solid var(--ink); padding:0; box-shadow:9px 9px 0 var(--ink) }
     dialog::backdrop { background:rgba(15,20,17,.65) }
     .dialog-head { display:flex; justify-content:space-between; padding:16px 18px; border-bottom:1px solid var(--line) }
@@ -151,9 +153,17 @@
     </div>
     <div id="gallery" class="gallery"><div class="empty">尚无扫描结果</div></div>
     <div class="pager">
+      <button id="firstBtn" disabled>首页</button>
       <button id="prevBtn" disabled>上一页</button>
       <span id="pageMeta" class="meta">第 0 页</span>
+      <label class="page-jump" for="pageInput">
+        跳到
+        <input id="pageInput" type="number" min="1" value="1" aria-label="目标页码">
+        页
+      </label>
+      <button id="goPageBtn" disabled>跳转</button>
       <button id="nextBtn" disabled>下一页</button>
+      <button id="lastBtn" disabled>末页</button>
     </div>
   </section>
 </main>
@@ -251,11 +261,19 @@ async function loadCandidates(reset=false) {
   renderGallery();
 }
 function renderGallery() {
+  const currentPage = total ? Math.floor(offset / pageSize) + 1 : 0;
+  const pageCount = Math.ceil(total / pageSize);
   $("selectionMeta").textContent = `当前筛选 ${total} 张；已确认 ${selections.size} 张。只有勾选的照片才会写入 EXIF。`;
   $("applyBtn").disabled = selections.size === 0 || lastRunning;
-  $("prevBtn").disabled = offset === 0;
-  $("nextBtn").disabled = offset + pageSize >= total;
-  $("pageMeta").textContent = total ? `第 ${Math.floor(offset/pageSize)+1} / ${Math.ceil(total/pageSize)} 页` : "无结果";
+  $("firstBtn").disabled = currentPage <= 1;
+  $("prevBtn").disabled = currentPage <= 1;
+  $("nextBtn").disabled = currentPage === 0 || currentPage >= pageCount;
+  $("lastBtn").disabled = currentPage === 0 || currentPage >= pageCount;
+  $("goPageBtn").disabled = pageCount <= 1;
+  $("pageInput").disabled = pageCount === 0;
+  $("pageInput").max = Math.max(1, pageCount);
+  $("pageInput").value = Math.max(1, currentPage);
+  $("pageMeta").textContent = total ? `第 ${currentPage} / ${pageCount} 页` : "无结果";
   if (!currentItems.length) {
     $("gallery").innerHTML = '<div class="empty">这个分类下没有照片。</div>';
     return;
@@ -299,6 +317,13 @@ function chooseAngle(itemId, angle, forceSelect=true) {
   }
   scheduleSelectionSave();
   renderGallery();
+}
+function goToPage(page) {
+  const pageCount = Math.ceil(total / pageSize);
+  if (!pageCount) return;
+  const target = Math.max(1, Math.min(pageCount, Number.parseInt(page, 10) || 1));
+  offset = (target - 1) * pageSize;
+  loadCandidates().catch(showError);
 }
 $("gallery").addEventListener("click", event => {
   const card = event.target.closest(".photo-card");
@@ -403,8 +428,14 @@ $("closeBrowser").onclick = () => $("browserDialog").close();
 $("scanBtn").onclick = startScan;
 $("stopBtn").onclick = async () => { await api("/api/stop",{method:"POST",body:"{}"}); refresh(); };
 $("filter").onchange = () => loadCandidates(true).catch(showError);
+$("firstBtn").onclick = () => goToPage(1);
 $("prevBtn").onclick = () => { offset=Math.max(0,offset-pageSize); loadCandidates().catch(showError); };
 $("nextBtn").onclick = () => { offset+=pageSize; loadCandidates().catch(showError); };
+$("lastBtn").onclick = () => goToPage(Math.ceil(total/pageSize));
+$("goPageBtn").onclick = () => goToPage($("pageInput").value);
+$("pageInput").onkeydown = event => {
+  if (event.key === "Enter") goToPage(event.currentTarget.value);
+};
 $("selectPageBtn").onclick = () => {
   currentItems.forEach(item => {
     if (item.suggested_angle) selections.set(item.id,{id:item.id,angle:item.suggested_angle,path:item.relative_path});
