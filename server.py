@@ -194,6 +194,8 @@ def public_scan_summary(path: Path | None, scan: dict | None) -> dict | None:
 def ensure_scan_backend_safe(scan: dict) -> None:
     if scan.get("backend") == "opencl":
         raise ValueError("该扫描由已禁用的 OpenCL 核显后端生成，请升级后使用 CPU 重新扫描")
+    if scan.get("model") != "yunet-2023mar-evidence-v2":
+        raise ValueError("该扫描使用旧版方向判断规则生成，请使用 2.1.2 重新扫描")
 
 
 def public_task_summary(path: Path | None, task: dict | None) -> dict | None:
@@ -319,7 +321,7 @@ JOB = Job()
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "PhotoOrientation/2.1"
+    server_version = "PhotoOrientation/2.1.2"
 
     def log_message(self, format: str, *args) -> None:
         return
@@ -411,7 +413,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             scan = json.loads(scan_path.read_text(encoding="utf-8"))
             status_filter = query.get("status", ["suggested"])[0]
-            allowed_filters = {"suggested", "manual-review", "probably-correct", "all"}
+            allowed_filters = {"suggested", "manual-review", "probably-correct", "error", "all"}
             if status_filter not in allowed_filters:
                 status_filter = "suggested"
             items = scan.get("items", [])
@@ -632,5 +634,5 @@ if __name__ == "__main__":
             save_config(DEFAULT_CONFIG)
         except ValueError:
             write_json_atomic(CONFIG_FILE, DEFAULT_CONFIG)
-    print(f"照片方向安全修正 2.1 Web UI: 0.0.0.0:{PORT}", flush=True)
+    print(f"照片方向安全修正 2.1.2 Web UI: 0.0.0.0:{PORT}", flush=True)
     ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()

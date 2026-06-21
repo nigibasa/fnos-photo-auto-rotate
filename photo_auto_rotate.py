@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""fnOS Photo Orientation 2.1.
+"""fnOS Photo Orientation 2.1.2.
 
 The program never rotates or re-encodes image pixels. Scans are read-only.
 An approved JPEG is corrected by writing only EXIF Orientation to a staged
@@ -45,8 +45,11 @@ SKIP_DIR_NAMES = {
 ANGLE_TO_ORIENTATION = {90: 6, 180: 3, 270: 8}
 ORIENTATION_TO_ANGLE = {1: 0, 3: 180, 6: 90, 8: 270}
 SCHEMA_VERSION = 2
-MODEL_VERSION = "yunet-2023mar-j4125-safe"
+MODEL_VERSION = "yunet-2023mar-evidence-v2"
 DEFAULT_MODEL = Path(os.environ.get("YUNET_MODEL", "/app/models/face_detection_yunet_2023mar.onnx"))
+MIN_FACE_CONFIDENCE = 0.90
+MIN_FACE_AREA_RATIO = 0.0025
+MIN_FACE_SCORE = 3.0
 _CPU_DETECTOR = None
 
 
@@ -179,15 +182,44 @@ def create_yunet_detector(model: Path, target: str):
     )
 
 
-def face_score(detector, frame) -> tuple[float, int]:
+def face_score(detector, frame) -> tuple[float, int, float, float]:
     detector.setInputSize((frame.shape[1], frame.shape[0]))
     _, faces = detector.detect(frame)
     if faces is None or len(faces) == 0:
-        return 0.0, 0
+        return 0.0, 0, 0.0, 0.0
     image_area = float(frame.shape[0] * frame.shape[1])
-    area_score = sum((float(face[2]) * float(face[3])) / image_area for face in faces)
+    area_ratios = [(float(face[2]) * float(face[3])) / image_area for face in faces]
+    area_score = sum(area_ratios)
     confidence_score = sum(float(face[-1]) for face in faces)
-    return len(faces) * 2.0 + area_score * 25.0 + confidence_score, len(faces)
+    return (
+        len(faces) * 2.0 + area_score * 25.0 + confidence_score,
+        len(faces),
+        max(float(face[-1]) for face in faces),
+        max(area_ratios),
+    )
+
+
+def decide_orientation(
+    scored: list[tuple[int, float, int, float, float]],
+    min_confidence: float,
+) -> tuple[str, int, float, str]:
+    scored.sort(key=lambda item: item[1], reverse=True)
+    best_angle, best_score, best_count, best_face_confidence, best_area_ratio = scored[0]
+    second_score = scored[1][1] if len(scored) > 1 else 0.0
+    ratio = best_score / max(second_score, 0.01)
+    if best_count == 0:
+        return "manual-review", 0, ratio, "未识别到可用于判断方向的人脸"
+    if (
+        best_face_confidence < MIN_FACE_CONFIDENCE
+        or best_area_ratio < MIN_FACE_AREA_RATIO
+        or best_score < MIN_FACE_SCORE
+    ):
+        return "manual-review", 0, ratio, "人脸证据不足，保持原图并请人工判断"
+    if best_angle == 0:
+        return "probably-correct", 0, ratio, "人脸检测认为当前方向最可能正确"
+    if ratio < min_confidence:
+        return "manual-review", 0, ratio, "各方向检测结果接近，保持原图并请人工判断"
+    return "suggested", best_angle, ratio, "人脸检测建议，仅供人工确认，不会自动执行"
 
 
 @dataclass
@@ -238,7 +270,7 @@ def classify_frame(
             status="exif-managed",
             suggested_angle=ORIENTATION_TO_ANGLE.get(orientation, 0),
             confidence=0.0,
-            reason=f"已有 EXIF Orientation={orientation}，2.1 不修改",
+            reason=f"已有 EXIF Orientation={orientation}，2.1.2 不修改",
         )
 
     common = {
@@ -265,25 +297,15 @@ def classify_frame(
         )
 
     angles = [0, 90, 270] + ([180] if allow_180 else [])
-    scored: list[tuple[int, float, int]] = []
+    scored: list[tuple[int, float, int, float, float]] = []
     for angle in angles:
-        score, count = face_score(detector, rotate_frame(frame, angle))
-        scored.append((angle, score, count))
-    scored.sort(key=lambda item: item[1], reverse=True)
-    scores_text = ",".join(f"{angle}:{score:.3f}/{count}" for angle, score, count in scored)
-    best_angle, best_score, best_count = scored[0]
-    second_score = scored[1][1] if len(scored) > 1 else 0.0
-    confidence = best_score / max(second_score, 0.01)
-
-    if best_count == 0:
-        status, reason = "manual-review", "未识别到可用于判断方向的人脸"
-        best_angle = 0
-    elif best_angle == 0:
-        status, reason = "probably-correct", "人脸检测认为当前方向最可能正确"
-    elif confidence < min_confidence:
-        status, reason = "manual-review", "各方向检测结果接近，需要人工确认"
-    else:
-        status, reason = "suggested", "人脸检测建议，仅供人工确认，不会自动执行"
+        score, count, face_confidence, area_ratio = face_score(detector, rotate_frame(frame, angle))
+        scored.append((angle, score, count, face_confidence, area_ratio))
+    scores_text = ",".join(
+        f"{angle}:{score:.3f}/{count}/{face_confidence:.3f}/{area_ratio:.5f}"
+        for angle, score, count, face_confidence, area_ratio in scored
+    )
+    status, best_angle, confidence, reason = decide_orientation(scored, min_confidence)
 
     return ScanItem(
         **common,
@@ -349,7 +371,7 @@ def prepare_gpu_worker(args: tuple[str, str]) -> dict:
                     status="exif-managed",
                     suggested_angle=ORIENTATION_TO_ANGLE.get(orientation, 0),
                     confidence=0.0,
-                    reason=f"已有 EXIF Orientation={orientation}，2.1 不修改",
+                    reason=f"已有 EXIF Orientation={orientation}，2.1.2 不修改",
                 )
             )
         }
@@ -383,21 +405,13 @@ def classify_gpu_prepared(prepared: dict, detector, min_confidence: float, allow
     angles = [0, 90, 270] + ([180] if allow_180 else [])
     scored = []
     for angle in angles:
-        score, count = face_score(detector, rotate_frame(frame, angle))
-        scored.append((angle, score, count))
-    scored.sort(key=lambda item: item[1], reverse=True)
-    scores_text = ",".join(f"{angle}:{score:.3f}/{count}" for angle, score, count in scored)
-    best_angle, best_score, best_count = scored[0]
-    second_score = scored[1][1] if len(scored) > 1 else 0.0
-    confidence = best_score / max(second_score, 0.01)
-    if best_count == 0:
-        status, reason, best_angle = "manual-review", "未识别到可用于判断方向的人脸", 0
-    elif best_angle == 0:
-        status, reason = "probably-correct", "人脸检测认为当前方向最可能正确"
-    elif confidence < min_confidence:
-        status, reason = "manual-review", "各方向检测结果接近，需要人工确认"
-    else:
-        status, reason = "suggested", "YuNet 方向建议，仅供人工确认，不会自动执行"
+        score, count, face_confidence, area_ratio = face_score(detector, rotate_frame(frame, angle))
+        scored.append((angle, score, count, face_confidence, area_ratio))
+    scores_text = ",".join(
+        f"{angle}:{score:.3f}/{count}/{face_confidence:.3f}/{area_ratio:.5f}"
+        for angle, score, count, face_confidence, area_ratio in scored
+    )
+    status, best_angle, confidence, reason = decide_orientation(scored, min_confidence)
     return asdict(
         ScanItem(
             **common,
@@ -791,8 +805,13 @@ def scan(
     print("")
     print(f"扫描完成：{len(items)} 张 JPEG；错误：{errors} 张")
     print(f"建议人工确认：{counts.get('suggested', 0)} 张")
+    if errors:
+        print("以下照片读取失败，已安全跳过：")
+        for item in items:
+            if item.get("status") == "error":
+                print(f"[skipped-error    ] {item['relative_path']}: {item.get('reason', '未知错误')}")
     print(f"SCAN_FILE={scan_path}")
-    return 0 if errors == 0 else 1
+    return 0
 
 
 def run_exiftool_set_orientation(path: Path, orientation: int) -> None:
@@ -1060,7 +1079,7 @@ def rollback_task(source: Path, task_manifest_path: Path) -> int:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="fnOS 照片方向安全修正 2.1")
+    parser = argparse.ArgumentParser(description="fnOS 照片方向安全修正 2.1.2")
     parser.add_argument("--source", type=Path, required=True)
     parser.add_argument("--work", type=Path, required=True)
     parser.add_argument("--mode", choices=["scan", "apply-manifest", "rollback-task"], default="scan")

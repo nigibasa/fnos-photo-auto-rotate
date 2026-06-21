@@ -237,6 +237,7 @@ class SafeOrientationTests(unittest.TestCase):
                 "kind": "photo-orientation-scan",
                 "created_at": "2026-06-20T12:00:00+08:00",
                 "source": str(photos.resolve()),
+                "model": rotator.MODEL_VERSION,
                 "counts": {"suggested": 1, "total": 1, "errors": 0},
                 "items": [
                     {

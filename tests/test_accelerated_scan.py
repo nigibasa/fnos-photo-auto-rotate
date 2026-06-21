@@ -72,14 +72,27 @@ class AcceleratedScanTests(unittest.TestCase):
 
         detector = rotator.create_yunet_detector(Path(os.environ["YUNET_MODEL"]), "cpu")
         frame = np.zeros((320, 320, 3), dtype=np.uint8)
-        score, count = rotator.face_score(detector, frame)
-        self.assertEqual((score, count), (0.0, 0))
+        score, count, face_confidence, area_ratio = rotator.face_score(detector, frame)
+        self.assertEqual((score, count, face_confidence, area_ratio), (0.0, 0, 0.0, 0.0))
         self.assertTrue(hasattr(rotator.cv2, "FaceDetectorYN"))
         with tempfile.TemporaryDirectory() as temp_dir:
             photo = Path(temp_dir) / "scan.jpg"
             create_jpeg(photo, (40, 60, 80))
             item = rotator.classify_frame(photo, photo.name, detector, 1.35, False)
             self.assertEqual(item.scan_fingerprint, rotator.fast_file_fingerprint(photo))
+
+    def test_high_ratio_with_weak_face_evidence_stays_manual(self) -> None:
+        status, angle, ratio, reason = rotator.decide_orientation(
+            [
+                (90, 2.89, 1, 0.88, 0.0008),
+                (0, 0.01, 0, 0.0, 0.0),
+                (270, 0.0, 0, 0.0, 0.0),
+            ],
+            1.35,
+        )
+        self.assertEqual((status, angle), ("manual-review", 0))
+        self.assertGreater(ratio, 200)
+        self.assertIn("证据不足", reason)
 
     def test_resume_journal_skips_completed_photo_and_finishes_scan(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -177,8 +190,16 @@ class AcceleratedScanTests(unittest.TestCase):
 
     def test_opencl_generated_scan_is_refused_for_apply(self) -> None:
         with self.assertRaisesRegex(ValueError, "OpenCL"):
-            webserver.ensure_scan_backend_safe({"backend": "opencl"})
-        webserver.ensure_scan_backend_safe({"backend": "cpu"})
+            webserver.ensure_scan_backend_safe(
+                {"backend": "opencl", "model": rotator.MODEL_VERSION}
+            )
+        with self.assertRaisesRegex(ValueError, "旧版"):
+            webserver.ensure_scan_backend_safe(
+                {"backend": "cpu", "model": "yunet-2023mar-j4125-safe"}
+            )
+        webserver.ensure_scan_backend_safe(
+            {"backend": "cpu", "model": rotator.MODEL_VERSION}
+        )
 
     def test_resume_rescans_photo_changed_after_checkpoint(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -229,6 +250,43 @@ class AcceleratedScanTests(unittest.TestCase):
 
             self.assertEqual(result, 0)
             self.assertEqual(calls, ["changed.jpg"])
+
+    def test_scan_with_unreadable_photo_completes_with_skipped_error(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "photos"
+            work = root / "data"
+            source.mkdir()
+            broken = source / "broken.jpg"
+            broken.write_bytes(b"not a jpeg")
+
+            with (
+                patch.object(rotator, "benchmark_acceleration", return_value=("cpu", {"requested": "cpu"})),
+                patch.object(rotator, "init_cpu_worker"),
+                patch.object(
+                    rotator,
+                    "classify_cpu_worker",
+                    side_effect=RuntimeError("cannot decode"),
+                ),
+                patch.object(rotator.concurrent.futures, "ProcessPoolExecutor", InlineExecutor),
+            ):
+                result = rotator.scan(
+                    source.resolve(),
+                    work.resolve(),
+                    recursive=True,
+                    min_confidence=1.35,
+                    allow_180=False,
+                    min_age_minutes=0,
+                    cpu_workers=2,
+                    acceleration="cpu",
+                    checkpoint_every=1,
+                    model=root / "fake.onnx",
+                )
+
+            self.assertEqual(result, 0)
+            scan = json.loads(next((work / "scans").glob("photo-orientation-scan-*.json")).read_text())
+            self.assertEqual(scan["counts"]["errors"], 1)
+            self.assertEqual(scan["items"][0]["status"], "error")
 
     def test_scan_identity_changes_when_acceleration_settings_change(self) -> None:
         source = Path("/storage/vol2/photos")

@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>照片方向安全修正 2.1</title>
+  <title>照片方向安全修正 2.1.2</title>
   <style>
     :root {
       --ink:#17201c; --paper:#f3f0e7; --card:#fffdf8; --line:#c9c2b2;
@@ -60,7 +60,7 @@
     .photo-body { padding:12px }
     .filename { font:700 12px/1.5 Consolas,monospace; overflow-wrap:anywhere; min-height:38px }
     .badge { display:inline-block; background:#e8eee9; padding:3px 7px; margin:7px 0; font-size:11px }
-    .angle-row { display:grid; grid-template-columns:repeat(3,1fr); gap:6px; margin:9px 0 }
+    .angle-row { display:grid; grid-template-columns:repeat(4,1fr); gap:6px; margin:9px 0 }
     .angle-row button { padding:7px 4px }
     .select-row { display:flex; align-items:center; gap:8px; font-weight:700; font-size:13px }
     .empty { grid-column:1/-1; padding:50px; text-align:center; color:var(--muted); border:1px dashed var(--line) }
@@ -80,7 +80,7 @@
   <header>
     <div>
       <div class="eyebrow">FNOS · METADATA-ONLY ORIENTATION</div>
-      <h1>照片方向安全修正 2.1</h1>
+      <h1>照片方向安全修正 2.1.2</h1>
       <p class="lede">扫描只读；程序只给方向建议。你在缩略图中确认后，插件仅修改 JPEG 的 EXIF 显示方向，不旋转、不裁剪、不重新压缩照片像素。</p>
     </div>
     <div class="safety">写入前备份，写入后逐像素比对。任何变化或不一致都会拒绝替换原图。</div>
@@ -143,6 +143,7 @@
           <option value="suggested">有明确建议</option>
           <option value="manual-review">方向不确定</option>
           <option value="probably-correct">可能已正确</option>
+          <option value="error">读取错误（已跳过）</option>
         </select>
         <button id="selectPageBtn">勾选本页建议</button>
         <button class="danger" id="applyBtn" disabled>应用已确认方向</button>
@@ -182,6 +183,7 @@ let total = 0;
 let lastRunning = false;
 let saveSelectionsTimer = null;
 const selections = new Map();
+const displayAngles = new Map();
 
 function esc(value) {
   return String(value ?? "").replace(/[&<>"']/g, ch => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[ch]));
@@ -260,18 +262,23 @@ function renderGallery() {
   }
   $("gallery").innerHTML = currentItems.map(item => {
     const selected = selections.get(item.id);
-    const angle = selected?.angle ?? item.suggested_angle ?? 0;
+    const angle = displayAngles.has(item.id)
+      ? displayAngles.get(item.id)
+      : (selected?.angle ?? item.suggested_angle ?? 0);
     const checked = selected ? "checked" : "";
     const cls = selected ? "photo-card selected" : "photo-card";
     const image = `/api/thumbnail?scan=${encodeURIComponent(scanName)}&id=${encodeURIComponent(item.id)}`;
     const checkboxDisabled = angle ? "" : "disabled";
-    const angleLabel = angle ? `确认按 ${angle}° 显示` : "请先点击一个旋转方向";
+    const angleLabel = angle
+      ? `确认按 ${angle}° 显示`
+      : (displayAngles.has(item.id) ? "保持原样，不处理" : "请先点击一个旋转方向");
     return `<article class="${cls}" data-id="${esc(item.id)}">
       <div class="preview"><img src="${image}" alt="" style="${rotationStyle(angle)}"></div>
       <div class="photo-body">
         <div class="filename">${esc(item.relative_path)}</div>
         <span class="badge">${esc(item.reason)} · ${Number(item.confidence||0).toFixed(2)}</span>
         <div class="angle-row">
+          <button data-angle="0">保持原样</button>
           <button data-angle="270">↶ 左转</button>
           <button data-angle="180">倒转</button>
           <button data-angle="90">右转 ↷</button>
@@ -284,7 +291,12 @@ function renderGallery() {
 function chooseAngle(itemId, angle, forceSelect=true) {
   const item = currentItems.find(entry => entry.id === itemId);
   if (!item) return;
-  if (forceSelect) selections.set(itemId, {id:itemId, angle, path:item.relative_path});
+  displayAngles.set(itemId, angle);
+  if (angle === 0) {
+    selections.delete(itemId);
+  } else if (forceSelect) {
+    selections.set(itemId, {id:itemId, angle, path:item.relative_path});
+  }
   scheduleSelectionSave();
   renderGallery();
 }
