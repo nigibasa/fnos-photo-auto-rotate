@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""fnOS Photo Orientation 2.1.2.
+"""fnOS Photo Orientation 2.1.3.
 
 The program never rotates or re-encodes image pixels. Scans are read-only.
 An approved JPEG is corrected by writing only EXIF Orientation to a staged
@@ -15,6 +15,7 @@ import hashlib
 import json
 import os
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -270,7 +271,7 @@ def classify_frame(
             status="exif-managed",
             suggested_angle=ORIENTATION_TO_ANGLE.get(orientation, 0),
             confidence=0.0,
-            reason=f"已有 EXIF Orientation={orientation}，2.1.2 不修改",
+            reason=f"已有 EXIF Orientation={orientation}，2.1.3 不修改",
         )
 
     common = {
@@ -371,7 +372,7 @@ def prepare_gpu_worker(args: tuple[str, str]) -> dict:
                     status="exif-managed",
                     suggested_angle=ORIENTATION_TO_ANGLE.get(orientation, 0),
                     confidence=0.0,
-                    reason=f"已有 EXIF Orientation={orientation}，2.1.2 不修改",
+                    reason=f"已有 EXIF Orientation={orientation}，2.1.3 不修改",
                 )
             )
         }
@@ -834,6 +835,80 @@ def run_exiftool_set_orientation(path: Path, orientation: int) -> None:
         raise RuntimeError(f"ExifTool 写入失败：{result.stderr.strip() or result.stdout.strip()}")
 
 
+def find_exif_orientation_value(data: bytes) -> tuple[int, str, int] | None:
+    """Return the inline TIFF Orientation value offset, byte order and value."""
+    if len(data) < 4 or data[:2] != b"\xff\xd8":
+        return None
+    position = 2
+    while position + 4 <= len(data):
+        if data[position] != 0xFF:
+            return None
+        while position < len(data) and data[position] == 0xFF:
+            position += 1
+        if position >= len(data):
+            return None
+        marker = data[position]
+        position += 1
+        if marker in {0xD9, 0xDA}:
+            return None
+        if marker == 0x01 or 0xD0 <= marker <= 0xD7:
+            continue
+        if position + 2 > len(data):
+            return None
+        segment_length = int.from_bytes(data[position : position + 2], "big")
+        if segment_length < 2 or position + segment_length > len(data):
+            return None
+        payload_start = position + 2
+        payload_end = position + segment_length
+        if marker == 0xE1 and data[payload_start : payload_start + 6] == b"Exif\x00\x00":
+            tiff = payload_start + 6
+            if tiff + 8 > payload_end:
+                return None
+            endian = data[tiff : tiff + 2]
+            if endian == b"II":
+                order, prefix = "little", "<"
+            elif endian == b"MM":
+                order, prefix = "big", ">"
+            else:
+                return None
+            if int.from_bytes(data[tiff + 2 : tiff + 4], order) != 42:
+                return None
+            ifd0 = tiff + int.from_bytes(data[tiff + 4 : tiff + 8], order)
+            if ifd0 + 2 > payload_end:
+                return None
+            entry_count = int.from_bytes(data[ifd0 : ifd0 + 2], order)
+            for index in range(entry_count):
+                entry = ifd0 + 2 + index * 12
+                if entry + 12 > payload_end:
+                    return None
+                tag, value_type, count = struct.unpack(
+                    f"{prefix}HHI", data[entry : entry + 8]
+                )
+                if tag == 0x0112 and value_type == 3 and count == 1:
+                    value_offset = entry + 8
+                    value = int.from_bytes(data[value_offset : value_offset + 2], order)
+                    return value_offset, order, value
+        position = payload_end
+    return None
+
+
+def patch_existing_exif_orientation(path: Path, orientation: int) -> int:
+    """Change exactly the existing two-byte Orientation value."""
+    original = path.read_bytes()
+    found = find_exif_orientation_value(original)
+    if found is None:
+        raise RuntimeError("ExifTool 失败，且照片没有可安全原位修改的 Orientation 字段")
+    offset, order, current = found
+    if current != 1:
+        raise RuntimeError(f"原位修改前 Orientation={current}，拒绝处理")
+    expected = bytearray(original)
+    expected[offset : offset + 2] = orientation.to_bytes(2, order)
+    path.write_bytes(expected)
+    if path.read_bytes() != bytes(expected):
+        raise RuntimeError("Orientation 两字节原位写入复核失败")
+    return offset
+
+
 def fsync_file(path: Path) -> None:
     with path.open("r+b") as handle:
         os.fsync(handle.fileno())
@@ -897,10 +972,21 @@ def apply_metadata_orientation(
     os.close(fd)
     staged = Path(temp_name)
     replaced = False
+    write_method = "exiftool"
     try:
         shutil.copy2(target, staged)
         orientation = ANGLE_TO_ORIENTATION[angle]
-        run_exiftool_set_orientation(staged, orientation)
+        try:
+            run_exiftool_set_orientation(staged, orientation)
+        except RuntimeError as exiftool_error:
+            shutil.copy2(target, staged)
+            offset = patch_existing_exif_orientation(staged, orientation)
+            expected = bytearray(target.read_bytes())
+            byte_order = find_exif_orientation_value(bytes(expected))[1]
+            expected[offset : offset + 2] = orientation.to_bytes(2, byte_order)
+            if staged.read_bytes() != bytes(expected):
+                raise RuntimeError("安全校验失败：原位回退修改了 Orientation 之外的数据") from exiftool_error
+            write_method = "surgical-two-byte-patch"
 
         staged_pixel_hash, staged_size, staged_mode = decoded_pixel_fingerprint(staged)
         if (staged_pixel_hash, staged_size, staged_mode) != (before_pixel_hash, before_size, before_mode):
@@ -931,6 +1017,7 @@ def apply_metadata_orientation(
             "before_sha256": current_hash,
             "after_sha256": sha256_file(target),
             "pixel_sha256": before_pixel_hash,
+            "write_method": write_method,
             "backup": str(backup),
             "status": "applied",
             "applied_at": utc_now(),
@@ -1079,7 +1166,7 @@ def rollback_task(source: Path, task_manifest_path: Path) -> int:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="fnOS 照片方向安全修正 2.1.2")
+    parser = argparse.ArgumentParser(description="fnOS 照片方向安全修正 2.1.3")
     parser.add_argument("--source", type=Path, required=True)
     parser.add_argument("--work", type=Path, required=True)
     parser.add_argument("--mode", choices=["scan", "apply-manifest", "rollback-task"], default="scan")

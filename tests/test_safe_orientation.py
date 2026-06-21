@@ -95,6 +95,59 @@ class SafeOrientationTests(unittest.TestCase):
             self.assertEqual(backup.read_bytes(), original_bytes)
             self.assertEqual(result["pixel_sha256"], original_pixel_hash[0])
 
+    def test_exiftool_failure_uses_exact_two_byte_orientation_patch(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "photos"
+            source.mkdir()
+            photo = source / "broken-subifd.jpg"
+            create_jpeg(photo)
+            metadata_only_writer(photo, 1)
+            original = photo.read_bytes()
+            found = rotator.find_exif_orientation_value(original)
+            self.assertIsNotNone(found)
+            offset, order, value = found
+            self.assertEqual(value, 1)
+            task_dir = root / "task"
+            task_dir.mkdir()
+
+            with patch.object(
+                rotator,
+                "run_exiftool_set_orientation",
+                side_effect=RuntimeError("Error reading OtherImageStart data in ExifIFD"),
+            ):
+                result = rotator.apply_metadata_orientation(
+                    source, photo.name, 270, rotator.sha256_file(photo), task_dir
+                )
+
+            expected = bytearray(original)
+            expected[offset : offset + 2] = (8).to_bytes(2, order)
+            self.assertEqual(photo.read_bytes(), bytes(expected))
+            self.assertEqual(result["write_method"], "surgical-two-byte-patch")
+            self.assertEqual(rotator.read_image_info(photo)[2], 8)
+
+    def test_exiftool_failure_without_existing_orientation_remains_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "photos"
+            source.mkdir()
+            photo = source / "no-orientation.jpg"
+            create_jpeg(photo)
+            original = photo.read_bytes()
+            task_dir = root / "task"
+            task_dir.mkdir()
+
+            with patch.object(
+                rotator,
+                "run_exiftool_set_orientation",
+                side_effect=RuntimeError("ExifTool failed"),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "没有可安全原位修改"):
+                    rotator.apply_metadata_orientation(
+                        source, photo.name, 90, rotator.sha256_file(photo), task_dir
+                    )
+            self.assertEqual(photo.read_bytes(), original)
+
     def test_changed_since_scan_is_refused_without_touching_file(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

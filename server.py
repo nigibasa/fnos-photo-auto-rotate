@@ -321,7 +321,7 @@ JOB = Job()
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "PhotoOrientation/2.1.2"
+    server_version = "PhotoOrientation/2.1.3"
 
     def log_message(self, format: str, *args) -> None:
         return
@@ -634,5 +634,5 @@ if __name__ == "__main__":
             save_config(DEFAULT_CONFIG)
         except ValueError:
             write_json_atomic(CONFIG_FILE, DEFAULT_CONFIG)
-    print(f"照片方向安全修正 2.1.2 Web UI: 0.0.0.0:{PORT}", flush=True)
+    print(f"照片方向安全修正 2.1.3 Web UI: 0.0.0.0:{PORT}", flush=True)
     ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
