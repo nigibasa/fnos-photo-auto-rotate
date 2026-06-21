@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""fnOS Photo Orientation 2.1.3.
+"""fnOS Photo Orientation 2.1.4.
 
 The program never rotates or re-encodes image pixels. Scans are read-only.
 An approved JPEG is corrected by writing only EXIF Orientation to a staged
@@ -271,7 +271,7 @@ def classify_frame(
             status="exif-managed",
             suggested_angle=ORIENTATION_TO_ANGLE.get(orientation, 0),
             confidence=0.0,
-            reason=f"已有 EXIF Orientation={orientation}，2.1.3 不修改",
+            reason=f"已有 EXIF Orientation={orientation}，2.1.4 不修改",
         )
 
     common = {
@@ -372,7 +372,7 @@ def prepare_gpu_worker(args: tuple[str, str]) -> dict:
                     status="exif-managed",
                     suggested_angle=ORIENTATION_TO_ANGLE.get(orientation, 0),
                     confidence=0.0,
-                    reason=f"已有 EXIF Orientation={orientation}，2.1.3 不修改",
+                    reason=f"已有 EXIF Orientation={orientation}，2.1.4 不修改",
                 )
             )
         }
@@ -1166,7 +1166,7 @@ def rollback_task(source: Path, task_manifest_path: Path) -> int:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="fnOS 照片方向安全修正 2.1.3")
+    parser = argparse.ArgumentParser(description="fnOS 照片方向安全修正 2.1.4")
     parser.add_argument("--source", type=Path, required=True)
     parser.add_argument("--work", type=Path, required=True)
     parser.add_argument("--mode", choices=["scan", "apply-manifest", "rollback-task"], default="scan")

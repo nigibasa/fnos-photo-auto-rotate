@@ -29,6 +29,7 @@ SELECTION_DIR = DATA_DIR / "selections"
 ALLOWED_ROOT = Path(os.environ.get("ALLOWED_ROOT", "/storage")).resolve()
 PORT = int(os.environ.get("WEB_PORT", "8321"))
 MAX_SELECTION = 5000
+ANGLE_TO_ORIENTATION = {90: 6, 180: 3, 270: 8}
 
 DEFAULT_CONFIG = {
     "source": str(ALLOWED_ROOT / "vol1"),
@@ -102,6 +103,24 @@ def fast_file_fingerprint(path: Path, sample_size: int = 64 * 1024) -> str:
             digest.update(offset.to_bytes(8, "big"))
             digest.update(handle.read(sample_size))
     return digest.hexdigest()
+
+
+def current_exif_orientation(path: Path) -> int:
+    with Image.open(path) as image:
+        return int(image.getexif().get(274, 1) or 1)
+
+
+def save_selections(scan_name: str, items: list[dict]) -> None:
+    write_json_atomic(
+        SELECTION_DIR / f"{scan_name}.json",
+        {
+            "schema": 2,
+            "kind": "photo-orientation-selections",
+            "scan": scan_name,
+            "updated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "items": [{"id": str(item["id"]), "angle": int(item["angle"])} for item in items],
+        },
+    )
 
 
 def save_config(data: dict) -> dict:
@@ -321,7 +340,7 @@ JOB = Job()
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "PhotoOrientation/2.1.3"
+    server_version = "PhotoOrientation/2.1.4"
 
     def log_message(self, format: str, *args) -> None:
         return
@@ -516,17 +535,7 @@ class Handler(BaseHTTPRequestHandler):
                     if angle not in {90, 180, 270}:
                         raise ValueError("人工选择角度无效")
                     clean_items.append({"id": str(item.get("id", "")), "angle": angle})
-                selection_path = SELECTION_DIR / f"{scan_name}.json"
-                write_json_atomic(
-                    selection_path,
-                    {
-                        "schema": 2,
-                        "kind": "photo-orientation-selections",
-                        "scan": scan_name,
-                        "updated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
-                        "items": clean_items,
-                    },
-                )
+                save_selections(scan_name, clean_items)
                 self.json_response({"saved": len(clean_items)})
                 return
             if self.path == "/api/scan":
@@ -553,6 +562,7 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError("扫描目录与当前目录不一致")
                 by_id = {item["id"]: item for item in scan.get("items", [])}
                 approved = []
+                already_applied = []
                 seen: set[str] = set()
                 for selection in selections:
                     item_id = str(selection.get("id", ""))
@@ -572,6 +582,16 @@ class Handler(BaseHTTPRequestHandler):
                         raise ValueError("照片路径超出扫描目录") from exc
                     if not target.is_file():
                         raise ValueError("待处理照片不存在")
+                    desired_orientation = ANGLE_TO_ORIENTATION[angle]
+                    current_orientation = current_exif_orientation(target)
+                    if current_orientation == desired_orientation:
+                        already_applied.append(item_id)
+                        continue
+                    if current_orientation != 1:
+                        raise ValueError(
+                            f"照片当前 Orientation={current_orientation}，与所选方向不一致，请重新检查："
+                            f"{item['relative_path']}"
+                        )
                     stat = target.stat()
                     if stat.st_size != int(item.get("size", -1)) or stat.st_mtime_ns != int(item.get("mtime_ns", -1)):
                         raise ValueError(f"照片在扫描后发生变化，请重新扫描：{item['relative_path']}")
@@ -592,6 +612,22 @@ class Handler(BaseHTTPRequestHandler):
                             "angle": angle,
                         }
                     )
+                save_selections(
+                    scan_name,
+                    [
+                        {"id": item["id"], "angle": item["angle"]}
+                        for item in approved
+                    ],
+                )
+                if not approved:
+                    self.json_response(
+                        {
+                            **JOB.status(),
+                            "already_applied": already_applied,
+                            "message": f"已跳过 {len(already_applied)} 张此前成功处理的照片",
+                        }
+                    )
+                    return
                 approval = {
                     "schema": 2,
                     "kind": "photo-orientation-approval",
@@ -604,7 +640,10 @@ class Handler(BaseHTTPRequestHandler):
                 approval_path = APPROVAL_DIR / f"approval-{stamp}.json"
                 write_json_atomic(approval_path, approval)
                 JOB.start("apply-manifest", config, approval_path)
-                self.json_response(JOB.status(), HTTPStatus.ACCEPTED)
+                self.json_response(
+                    {**JOB.status(), "already_applied": already_applied},
+                    HTTPStatus.ACCEPTED,
+                )
                 return
             if self.path == "/api/rollback":
                 if payload.get("confirm") != "ROLLBACK":
@@ -634,5 +673,5 @@ if __name__ == "__main__":
             save_config(DEFAULT_CONFIG)
         except ValueError:
             write_json_atomic(CONFIG_FILE, DEFAULT_CONFIG)
-    print(f"照片方向安全修正 2.1.3 Web UI: 0.0.0.0:{PORT}", flush=True)
+    print(f"照片方向安全修正 2.1.4 Web UI: 0.0.0.0:{PORT}", flush=True)
     ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()

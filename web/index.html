@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>照片方向安全修正 2.1.3</title>
+  <title>照片方向安全修正 2.1.4</title>
   <style>
     :root {
       --ink:#17201c; --paper:#f3f0e7; --card:#fffdf8; --line:#c9c2b2;
@@ -82,7 +82,7 @@
   <header>
     <div>
       <div class="eyebrow">FNOS · METADATA-ONLY ORIENTATION</div>
-      <h1>照片方向安全修正 2.1.3</h1>
+      <h1>照片方向安全修正 2.1.4</h1>
       <p class="lede">扫描只读；程序只给方向建议。你在缩略图中确认后，插件仅修改 JPEG 的 EXIF 显示方向，不旋转、不裁剪、不重新压缩照片像素。</p>
     </div>
     <div class="safety">写入前备份，写入后逐像素比对。任何变化或不一致都会拒绝替换原图。</div>
@@ -350,16 +350,25 @@ $("gallery").addEventListener("change", event => {
 });
 async function applySelected() {
   if (!selections.size) return;
-  const message = `将处理 ${selections.size} 张照片。只修改 EXIF Orientation，不改变像素；每张都会建立独立任务备份并校验。\\n\\n请输入 APPLY METADATA 继续：`;
+  const message = `将处理 ${selections.size} 张照片。只修改 EXIF Orientation，不改变像素；每张都会建立独立任务备份并校验。\n\n请输入 APPLY METADATA 继续：`;
   const confirm = prompt(message) || "";
   if (confirm !== "APPLY METADATA") return;
   try {
-    await api("/api/apply", {
+    const result = await api("/api/apply", {
       method:"POST",
       body:JSON.stringify({scan:scanName, items:[...selections.values()], confirm, config:config()})
     });
+    (result.already_applied || []).forEach(id => selections.delete(id));
+    if (result.running) {
+      selections.clear();
+      scheduleSelectionSave();
+    }
+    if (result.message) $("notice").textContent = result.message;
     await refresh();
-  } catch (error) { showError(error); }
+  } catch (error) {
+    showError(error);
+    alert(`未能开始处理：\n${error.message || error}`);
+  }
 }
 async function rollback() {
   const confirm = prompt("只会恢复最近一次 2.x 任务中仍未被再次修改的照片。请输入 ROLLBACK：") || "";

@@ -400,6 +400,19 @@ class SafeOrientationTests(unittest.TestCase):
                 ) as response:
                     saved_selections = json.loads(response.read().decode("utf-8"))
                 self.assertEqual(saved_selections["items"], [{"id": item_id, "angle": 90}])
+
+                metadata_only_writer(photo, 6)
+                with patch.object(webserver.JOB, "start") as start:
+                    with urllib.request.urlopen(request) as response:
+                        self.assertEqual(response.status, 200)
+                        retry = json.loads(response.read().decode("utf-8"))
+                    start.assert_not_called()
+                self.assertEqual(retry["already_applied"], [item_id])
+                with urllib.request.urlopen(
+                    f"{base}/api/selections?scan={scan_name}"
+                ) as response:
+                    saved_selections = json.loads(response.read().decode("utf-8"))
+                self.assertEqual(saved_selections["items"], [])
             finally:
                 httpd.shutdown()
                 httpd.server_close()
